@@ -392,12 +392,17 @@ TEST_CASE("huge finite inputs cannot produce NaN", "[mixer]") {
   m.setMicGain(2.0f);
   settle(m);
   const float big = std::numeric_limits<float>::max();
-  // Left: the tap overflows to +inf, the mic sum overflows to -inf, and inf + -inf is NaN.
+  // Left: tap gain overflows towards +inf while the mic sum overflows to -inf. Without fused
+  // multiply-add that is inf + -inf = NaN, which the mixer turns into 0; with it (arm64, or x86
+  // with FMA enabled) the sum is -inf, which clips to -1. Which one happens depends on the
+  // compiler, so the guarantee checked here is only that the output is a valid sample.
   const float tap[2] = {big, -big};
   const float mic[2] = {-big, -big};
   const auto s = mix(m, SourceView::interleaved(tap, 2), SourceView::interleaved(mic, 2), 1);
-  CHECK(s.l[0] == 0.0f);  // the NaN is replaced by silence
-  CHECK(s.r[0] == -1.0f);  // -inf + -inf clips like any other overload
+  CHECK(std::isfinite(s.l[0]));
+  CHECK(std::fabs(s.l[0]) <= 1.0f);
+  // Right: both overflow to -inf either way, which clips like any other overload.
+  CHECK(s.r[0] == -1.0f);
 }
 
 TEST_CASE("output does not depend on how the stream is cut into blocks", "[mixer]") {
