@@ -1,0 +1,28 @@
+# Throwaway spike (S3): probe what a macos-15 runner allows for Core Audio tests.
+# Not meant to merge.
+name: spike-runner
+
+on:
+  push:
+    branches: [ci/spike-macos-runner]
+  workflow_dispatch:
+
+concurrency:
+  group: spike-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run capability probes
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_ANALYTICS: "1"
+        run: bash spikes/runner/run.sh
