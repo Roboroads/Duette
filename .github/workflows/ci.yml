@@ -6,24 +6,15 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE'
-      - 'docs/**'
-      - 'spikes/**'
   push:
     branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE'
-      - 'docs/**'
-      - 'spikes/**'
   workflow_dispatch:
 
-# A new push to a PR supersedes the older run (macOS minutes are expensive).
-# Runs on main are never cancelled.
+# A new push to a PR supersedes the older run of that PR. Every other run
+# (pushes to main, manual runs) gets its own group keyed by commit SHA, so
+# runs on main are never collapsed or cancelled.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -52,8 +43,8 @@ jobs:
 
   macos-build:
     name: build (macOS)
-    # Runs only after the cheap Linux job passes, so a failing core test
-    # doesn't also burn macOS minutes.
+    # Runs only after the faster Linux job passes, so a failing core test
+    # fails the run early.
     needs: core-linux
     runs-on: macos-15
     timeout-minutes: 45
@@ -88,6 +79,7 @@ jobs:
         run: bash scripts/ci/build-cli.sh
 
       - name: Upload build output
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: duette-build

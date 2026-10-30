@@ -35,7 +35,9 @@ Build scripts leave their products in `build/out/` (git-ignored), under these ex
 - `build/out/Duette.app`
 - `build/out/duettectl`
 
-Packaging and release consume only these paths. Do not rename them.
+Everything in `build/out/` is a shippable build: Release configuration, arm64, unsigned or ad-hoc signed, and built without the test devices. Debug builds and test-device variants go to `build/test-out/` instead, so packaging never picks them up. Each script runs `mkdir -p build/out` and replaces any existing product of the same name.
+
+Packaging and release consume only the `build/out/` paths. Do not rename them.
 
 ### Versioning
 `version.txt` is the only place the version lives. Builds read it for `CFBundleShortVersionString` (app and driver) and the pkg version. `CFBundleVersion` is the CI run number. release-please owns the file and `CHANGELOG.md`, so never edit either by hand or bump a version in a PR.
@@ -50,4 +52,4 @@ Code that runs on a Core Audio I/O thread (the app's IOProc and the plug-in's re
 Share state with other threads through relaxed or acquire/release atomics only. Everything else (UI, device and process enumeration, the tap and aggregate lifecycle, persistence) is Swift.
 
 ### CI is the compiler for Apple code
-The dev container is Linux with clang and cmake but no Swift and no macOS SDK. Swift, Objective-C, libASPL and anything that includes a CoreAudio header can only be compiled by the macOS jobs in GitHub Actions. Push early and often, and read the run's logs before guessing at a fix. Keep `core/` free of Apple headers so it stays testable on Linux. macOS runner minutes are expensive on a private repo, so don't push speculative fixups in a row.
+The dev container is Linux with clang and cmake but no Swift and no macOS SDK. Swift, Objective-C, libASPL and anything that includes a CoreAudio header can only be compiled by the macOS jobs in GitHub Actions. CI runs on pull requests and on pushes to `main` only, so open a draft PR first, then push often, and read the run's logs before guessing at a fix. Keep `core/` free of Apple headers so it stays testable on Linux.

@@ -30,7 +30,11 @@ Build scripts write their products to `build/out/` (git-ignored) under exactly t
 | `build/out/Duette.app` | `build-app.sh` |
 | `build/out/duettectl` | `build-cli.sh` |
 
-`macos-build` uploads everything under `build/out/` as the `duette-build` workflow artifact. Nothing is uploaded if the folder is missing or empty. Artifacts are zipped, so the executable bit is lost: run `chmod +x duettectl` after downloading one.
+Everything in `build/out/` is a shippable build: Release configuration, arm64, unsigned or ad-hoc signed, and built without the test devices (`DUETTE_TEST_DEVICES` off). Debug builds and test-device variants go to `build/test-out/`, which packaging never reads.
+
+Each script runs `mkdir -p build/out` and replaces any existing product of the same name, so a re-run never mixes old and new output.
+
+`macos-build` uploads everything under `build/out/` as the `duette-build` workflow artifact, also when a build step failed (but not when the run was cancelled). Nothing is uploaded if the folder is missing or empty. Artifacts are zipped, so the executable bit is lost: run `chmod +x duettectl` after downloading one.
 
 ## Version
 
@@ -41,3 +45,8 @@ Build scripts write their products to `build/out/` (git-ignored) under exactly t
 1. Add `scripts/ci/<name>.sh` following the rules above.
 2. Add a step to `macos-build` (or `core-linux`) in `ci.yml` guarded by `if: hashFiles('scripts/ci/<name>.sh') != ''`.
 3. Add a row to the table in this file.
+4. In the first CI run, open the job and check that your step shows as success, not skipped. A skipped step means the `hashFiles` path doesn't match your file name.
+
+## Notes for the release workflow
+
+CI runs on `pull_request` and on pushes to `main`. A release-please PR is opened with `GITHUB_TOKEN`, and events created with `GITHUB_TOKEN` don't trigger other workflows, so `ci.yml` will not run on that PR. Don't count on a `pull_request` check for it: use a personal access token or GitHub App token for release-please, or run `ci.yml` by hand with `workflow_dispatch` on the release branch.
