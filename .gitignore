@@ -1,0 +1,30 @@
+# Build output. CI scripts write products to build/out/.
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+_deps/
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# Xcode. The project is generated from app/project.yml by XcodeGen.
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local planning notes, never committed
+.ai/
