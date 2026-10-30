@@ -32,6 +32,12 @@ else
   jobs=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
 fi
 
+# Leak checking only exists on Linux; asking for it on macOS makes ASan refuse to start.
+asan_options=${ASAN_OPTIONS:-}
+if [ -z "$asan_options" ] && [ "$(uname -s)" = Linux ]; then
+  asan_options=detect_leaks=1
+fi
+
 for mode in "${modes[@]}"; do
   case "$mode" in
     plain) sanitizer=none ;;
@@ -51,7 +57,7 @@ for mode in "${modes[@]}"; do
   # halt_on_error keeps a TSan report from being printed and then ignored.
   UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1}" \
   TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1 second_deadlock_stack=1}" \
-  ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=1}" \
+  ASAN_OPTIONS="$asan_options" \
     ctest --test-dir "$build_dir" --output-on-failure --no-tests=error --parallel "$jobs"
 done
 
