@@ -1,0 +1,87 @@
+name: CI
+
+# Every script step is guarded by hashFiles(...) != '', so a script that
+# doesn't exist yet is skipped and the job still passes. Adding a script to
+# scripts/ci/ turns its step on. See scripts/ci/README.md for the contract.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to a PR supersedes the older run of that PR. Every other run
+# (pushes to main, manual runs) gets its own group keyed by commit SHA, so
+# runs on main are never collapsed or cancelled.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core-linux:
+    name: core (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          cmake --version | head -n 1
+          c++ --version | head -n 1
+
+      - name: Test core
+        if: hashFiles('scripts/ci/test-core.sh') != ''
+        run: bash scripts/ci/test-core.sh
+
+  macos-build:
+    name: build (macOS)
+    # Runs only after the faster Linux job passes, so a failing core test
+    # fails the run early.
+    needs: core-linux
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          cmake --version | head -n 1
+
+      - name: Test core
+        if: hashFiles('scripts/ci/test-core.sh') != ''
+        run: bash scripts/ci/test-core.sh
+
+      - name: Build driver
+        if: hashFiles('scripts/ci/build-driver.sh') != ''
+        run: bash scripts/ci/build-driver.sh
+
+      - name: Build and test DuetteKit
+        if: hashFiles('scripts/ci/build-kit.sh') != ''
+        run: bash scripts/ci/build-kit.sh
+
+      - name: Build and test app
+        if: hashFiles('scripts/ci/build-app.sh') != ''
+        run: bash scripts/ci/build-app.sh
+
+      - name: Build and test duettectl
+        if: hashFiles('scripts/ci/build-cli.sh') != ''
+        run: bash scripts/ci/build-cli.sh
+
+      - name: Upload build output
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: duette-build
+          path: build/out
+          if-no-files-found: ignore
