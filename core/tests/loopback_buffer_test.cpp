@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -56,6 +57,33 @@ bool allEqual(const std::vector<int>& flags, std::size_t from, std::size_t to, i
     if (flags[i] != value) return false;
   }
   return true;
+}
+
+constexpr bool underThreadSanitizer() {
+#if defined(__SANITIZE_THREAD__)
+  return true;
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+  return true;
+#else
+  return false;
+#endif
+#else
+  return false;
+#endif
+}
+
+// How many 128-frame blocks the writer produces in the threaded test. TSan finds data races
+// whatever the count, but it makes everything ~20x slower, so it gets a short run. Every other
+// build gets a long one: that is what can catch a memory-ordering mistake, which x86 and TSan
+// cannot show but a weakly ordered CPU (the arm64 CI job) can. DUETTE_STRESS_BLOCKS overrides
+// it for longer local runs.
+std::int64_t stressBlocks() {
+  if (const char* env = std::getenv("DUETTE_STRESS_BLOCKS")) {
+    const long long n = std::atoll(env);
+    if (n > 0) return n;
+  }
+  return underThreadSanitizer() ? 4000 : 200000;
 }
 
 }  // namespace
@@ -181,6 +209,35 @@ TEST_CASE("a writer that goes back in time starts a new timeline", "[loopback]")
   CHECK(allEqual(readRange(*b, 100, 150), 0, 150, 1));
 }
 
+TEST_CASE("an old timeline never comes back, however many times the writer rewinds", "[loopback]") {
+  using Small = LoopbackBuffer<2, 64>;
+  Small b;
+  auto fill = [&](std::int64_t t0, std::size_t n) {
+    std::vector<float> in(n * 2);
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto t = t0 + static_cast<std::int64_t>(i);
+      in[2 * i] = left(t);
+      in[2 * i + 1] = right(t);
+    }
+    b.write(t0, in.data(), n);
+  };
+
+  fill(0, 64);  // timeline 0 fills every slot
+
+  // Each of these starts a new timeline at the same place, touching only slot 0, so slots 1..63
+  // keep the frames of timeline 0. 65536 rewinds is enough to wrap any generation counter up to
+  // 16 bits, and the 15-bit one the buffer used to have wraps twice.
+  for (int i = 0; i < 65536; ++i) fill(0, 1);
+
+  // Move the end forward without writing slots 1..63, so that they fall inside the readable window.
+  fill(64, 1);
+  REQUIRE(b.lastWrittenEnd() == 65);
+
+  std::vector<float> out(63 * 2, 7.0f);
+  CHECK(b.read(1, out.data(), 63) == 0);  // frames 1..63 were never written in this timeline
+  for (float v : out) REQUIRE(v == 0.0f);
+}
+
 TEST_CASE("zero-length reads and writes do nothing", "[loopback]") {
   auto b = makeBuf();
   b->write(0, nullptr, 0);
@@ -220,7 +277,7 @@ TEST_CASE("mono and wide buffers keep channels apart", "[loopback]") {
 TEST_CASE("one writer and two readers never see torn or misplaced frames", "[loopback][threads]") {
   auto b = makeBuf();
   constexpr std::int64_t kBlock = 128;
-  constexpr std::int64_t kBlocks = 3000;
+  const std::int64_t kBlocks = stressBlocks();
   constexpr std::size_t kReadFrames = 96;
 
   std::atomic<bool> done{false};
@@ -284,4 +341,9 @@ TEST_CASE("one writer and two readers never see torn or misplaced frames", "[loo
   CHECK(edge.badFrames == 0);
   CHECK(head.reads > 0);
   CHECK(head.validFrames > 0);
+  // The edge reader sits where the writer recycles slots, so frames there are valid only when
+  // no overwrite overlapped the read. Seeing some means the test really raced the writer; seeing
+  // none would mean it checked nothing.
+  CHECK(edge.reads > 0);
+  CHECK(edge.validFrames > 0);
 }

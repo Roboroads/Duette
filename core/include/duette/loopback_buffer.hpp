@@ -37,7 +37,9 @@ namespace duette {
 /// Going back in time (a write that starts before the end of the previous one, for example when
 /// a device restarts its sample clock) begins a new timeline: the previous timeline stops being
 /// readable at once, and the new one starts at the first frame written. Moving forward over a
-/// gap does not do that, so readers that are still behind the gap keep their data.
+/// gap does not do that, so readers that are still behind the gap keep their data. The timeline
+/// number has 15 bits; each time it wraps the writer first retires every tag, so frames of an
+/// old timeline can never match again.
 ///
 /// The object is large (about `CapacityPow2 * (8 + 4 * Channels)` bytes, 256 KiB for 2 channels
 /// and 16384 frames): keep it in static or heap storage, never on a thread stack. Samples are
@@ -86,6 +88,12 @@ class LoopbackBuffer {
     const std::int64_t previousEnd = end_.load(std::memory_order_relaxed);
     if (previousEnd != kNothingWritten && sampleTime < previousEnd) {
       generation = (generation + 1) & kGenerationMask;
+      if (generation == 0) {
+        // The counter is about to reuse a value. Frames left over from the last timeline that
+        // had it would match again, so retire every tag before the value is published. This
+        // costs one pass over the ring every 32768 rewinds.
+        for (Slot& slot : slots_) slot.tag.store(kInvalidTag, std::memory_order_relaxed);
+      }
       generation_.store(generation, std::memory_order_release);
     }
 
