@@ -89,8 +89,8 @@ TEST_CASE("source views describe interleaved and planar channels", "[mixer][view
   }
 
   CHECK(SourceView{}.channels() == 0);
-  CHECK(SourceView::interleaved(nullptr, 2).channels() == 0);
   CHECK(SourceView::interleaved(inter, 0).channels() == 0);
+  CHECK(SourceView::planar(nullptr, 2).channels() == 0);
 }
 
 TEST_CASE("a view can be built from several buffers", "[mixer][view]") {
@@ -105,8 +105,7 @@ TEST_CASE("a view can be built from several buffers", "[mixer][view]") {
   CHECK(v.at(1, 1) == 30.0f);
   CHECK(v.at(2, 1) == 31.0f);
 
-  CHECK_FALSE(v.appendInterleaved(nullptr, 2));
-  CHECK_FALSE(v.appendPlane(nullptr));
+  CHECK_FALSE(v.appendInterleaved(stereo, 0));  // nothing to add
   CHECK(v.channels() == 3);
 
   // Capacity is fixed; running out is reported, never a crash or an overwrite.
@@ -115,6 +114,58 @@ TEST_CASE("a view can be built from several buffers", "[mixer][view]") {
   CHECK_FALSE(full.appendPlane(mono));
   CHECK_FALSE(full.appendInterleaved(stereo, 2));
   CHECK(full.channels() == SourceView::kMaxChannels);
+}
+
+TEST_CASE("a view keeps as many channels as fit instead of dropping them all", "[mixer][view]") {
+  // A 64-channel interleaved buffer: the first 32 channels are kept and still step over the
+  // whole 64-sample frame.
+  std::vector<float> wide(64 * 3);
+  for (std::size_t i = 0; i < wide.size(); ++i) wide[i] = static_cast<float>(i);
+  const auto v = SourceView::interleaved(wide.data(), 64);
+  REQUIRE(v.channels() == SourceView::kMaxChannels);
+  for (std::size_t f = 0; f < 3; ++f) {
+    for (std::size_t c = 0; c < SourceView::kMaxChannels; ++c) {
+      REQUIRE(v.at(c, f) == static_cast<float>(f * 64 + c));
+    }
+  }
+
+  // An append that only partly fits adds what fits and says it was not all of it.
+  SourceView part;
+  for (std::size_t i = 0; i < SourceView::kMaxChannels - 2; ++i) REQUIRE(part.appendPlane(wide.data()));
+  CHECK_FALSE(part.appendInterleaved(wide.data(), 4));
+  REQUIRE(part.channels() == SourceView::kMaxChannels);
+  CHECK(part.at(30, 1) == wide[4]);  // channel 0 of frame 1 of a 4-channel buffer
+  CHECK(part.at(31, 1) == wide[5]);
+}
+
+TEST_CASE("a missing buffer is silent channels, not the end of the view", "[mixer][view]") {
+  const float r[3] = {1.0f, 2.0f, 3.0f};
+  const float* planes[3] = {nullptr, r, nullptr};
+  const auto v = SourceView::planar(planes, 3);
+  REQUIRE(v.channels() == 3);
+  for (std::size_t f = 0; f < 3; ++f) {
+    CHECK(v.at(0, f) == 0.0f);
+    CHECK(v.at(1, f) == r[f]);
+    CHECK(v.at(2, f) == 0.0f);
+  }
+
+  // Same for an interleaved buffer whose data pointer is null: its channels still count.
+  SourceView w;
+  CHECK(w.appendInterleaved(nullptr, 2));
+  CHECK(w.appendPlane(nullptr));
+  REQUIRE(w.channels() == 3);
+  CHECK(w.at(0, 1000) == 0.0f);
+  CHECK(w.at(1, 5) == 0.0f);
+  CHECK(w.at(2, 99999) == 0.0f);
+}
+
+TEST_CASE("a mic with a missing plane averages the silence in", "[mixer]") {
+  Mixer m;
+  const float r[1] = {0.4f};
+  const float* planes[2] = {nullptr, r};
+  const auto s = mix(m, SourceView{}, SourceView::planar(planes, 2), 1);
+  CHECK(s.l[0] == Catch::Approx(0.2f));
+  CHECK(s.r[0] == Catch::Approx(0.2f));
 }
 
 TEST_CASE("a mono mic is sent to both sides", "[mixer]") {
@@ -386,22 +437,82 @@ TEST_CASE("non-finite input samples are treated as zero", "[mixer]") {
   CHECK(s.r[2] == Catch::Approx(-0.1f + 0.2f));
 }
 
-TEST_CASE("huge finite inputs cannot produce NaN", "[mixer]") {
+TEST_CASE("a muted or zero-gain source contributes exactly nothing, even with huge samples", "[mixer]") {
+  // Two of these overflow a float sum; 0 times the resulting infinity would be NaN.
+  const float big = 3.0e38f;
+  const float tap[2] = {0.5f, 0.25f};
+  const float hugeMic[2] = {big, big};
+
+  Mixer muted;
+  muted.setMicMuted(true);
+  settle(muted);
+  auto s = mix(muted, SourceView::interleaved(tap, 2), SourceView::interleaved(hugeMic, 2), 1);
+  CHECK(s.l[0] == 0.5f);
+  CHECK(s.r[0] == 0.25f);
+
+  Mixer zeroMic;
+  zeroMic.setMicGain(0.0f);
+  settle(zeroMic);
+  s = mix(zeroMic, SourceView::interleaved(tap, 2), SourceView::interleaved(hugeMic, 2), 1);
+  CHECK(s.l[0] == 0.5f);
+  CHECK(s.r[0] == 0.25f);
+
+  const float hugeTap[2] = {big, -big};
+  const float mic[1] = {0.125f};
+  Mixer zeroApp;
+  zeroApp.setAppGain(0.0f);
+  settle(zeroApp);
+  s = mix(zeroApp, SourceView::interleaved(hugeTap, 2), SourceView::interleaved(mic, 1), 1);
+  CHECK(s.l[0] == 0.125f);
+  CHECK(s.r[0] == 0.125f);
+
+  Mixer mutedApp;
+  mutedApp.setAppMuted(true);
+  settle(mutedApp);
+  s = mix(mutedApp, SourceView::interleaved(hugeTap, 2), SourceView::interleaved(mic, 1), 1);
+  CHECK(s.l[0] == 0.125f);
+  CHECK(s.r[0] == 0.125f);
+}
+
+TEST_CASE("mic channels that overflow a float sum still average correctly", "[mixer]") {
+  const float big = 3.0e38f;
+  // Summed in float this overflows to infinity on the first two; the true average is 0.
+  const float mic[4] = {big, big, -big, -big};
+  const float tap[2] = {0.25f, -0.25f};
   Mixer m;
-  m.setAppGain(2.0f);
-  m.setMicGain(2.0f);
-  settle(m);
+  const auto s = mix(m, SourceView::interleaved(tap, 2), SourceView::interleaved(mic, 4), 1);
+  CHECK(s.l[0] == 0.25f);
+  CHECK(s.r[0] == -0.25f);
+
+  // Same sign: the average is a representable 3e38, which saturates the output.
+  const float loud[4] = {big, big, big, big};
+  const auto t = mix(m, SourceView{}, SourceView::interleaved(loud, 4), 1);
+  CHECK(t.l[0] == 1.0f);
+  CHECK(t.r[0] == 1.0f);
+}
+
+TEST_CASE("huge finite inputs give valid samples", "[mixer]") {
   const float big = std::numeric_limits<float>::max();
-  // Left: tap gain overflows towards +inf while the mic sum overflows to -inf. Without fused
-  // multiply-add that is inf + -inf = NaN, which the mixer turns into 0; with it (arm64, or x86
-  // with FMA enabled) the sum is -inf, which clips to -1. Which one happens depends on the
-  // compiler, so the guarantee checked here is only that the output is a valid sample.
+
+  // At unity gain these results do not depend on whether the compiler fuses multiply-add.
+  Mixer unity;
   const float tap[2] = {big, -big};
   const float mic[2] = {-big, -big};
-  const auto s = mix(m, SourceView::interleaved(tap, 2), SourceView::interleaved(mic, 2), 1);
+  auto s = mix(unity, SourceView::interleaved(tap, 2), SourceView::interleaved(mic, 2), 1);
+  CHECK(s.l[0] == 0.0f);   // big + -big
+  CHECK(s.r[0] == -1.0f);  // -big + -big overflows to -inf and clips
+
+  // At gain 2 the tap side overflows towards +inf while the mic side overflows to -inf. Without
+  // fused multiply-add that is inf + -inf = NaN, which the mixer turns into 0; with it (arm64,
+  // or x86 with FMA) the sum is -inf, which clips to -1. The compiler decides, so the guarantee
+  // checked is only that the output is a valid sample.
+  Mixer doubled;
+  doubled.setAppGain(2.0f);
+  doubled.setMicGain(2.0f);
+  settle(doubled);
+  s = mix(doubled, SourceView::interleaved(tap, 2), SourceView::interleaved(mic, 2), 1);
   CHECK(std::isfinite(s.l[0]));
   CHECK(std::fabs(s.l[0]) <= 1.0f);
-  // Right: both overflow to -inf either way, which clips like any other overload.
   CHECK(s.r[0] == -1.0f);
 }
 
