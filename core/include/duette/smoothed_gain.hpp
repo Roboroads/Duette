@@ -20,11 +20,20 @@ namespace duette {
 class SmoothedGain {
  public:
   static constexpr float kDefaultRampSeconds = 0.005f;
+  /// Longest ramp that is accepted; keeps the step arithmetic exact in a float.
+  static constexpr std::size_t kMaxRampFrames = std::size_t{1} << 24;
 
   explicit SmoothedGain(float sampleRate = 48000.0f, float initialGain = 1.0f,
                         float rampSeconds = kDefaultRampSeconds) noexcept {
+    // Clamp before converting: a NaN, infinite or enormous product is not a valid size_t.
     const double frames = std::round(static_cast<double>(sampleRate) * static_cast<double>(rampSeconds));
-    length_ = frames >= 1.0 ? static_cast<std::size_t>(frames) : 1;
+    if (!(frames >= 1.0)) {
+      length_ = 1;
+    } else if (frames >= static_cast<double>(kMaxRampFrames)) {
+      length_ = kMaxRampFrames;
+    } else {
+      length_ = static_cast<std::size_t>(frames);
+    }
     invLength_ = 1.0f / static_cast<float>(length_);
     gain_ = sanitize(initialGain, 0.0f);
     current_ = start_ = dest_ = gain_;

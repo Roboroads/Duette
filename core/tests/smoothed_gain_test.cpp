@@ -34,6 +34,30 @@ TEST_CASE("the ramp is 5 ms long", "[gain]") {
   CHECK(SmoothedGain(1.0f).rampFrames() >= 1);  // never zero, even for silly rates
 }
 
+TEST_CASE("absurd sample rates and ramp times still give a usable ramp", "[gain]") {
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const std::size_t most = SmoothedGain::kMaxRampFrames;
+
+  CHECK(SmoothedGain(inf).rampFrames() == most);
+  CHECK(SmoothedGain(1.0e30f).rampFrames() == most);
+  CHECK(SmoothedGain(48000.0f, 1.0f, 1.0e30f).rampFrames() == most);
+  CHECK(SmoothedGain(48000.0f, 1.0f, inf).rampFrames() == most);
+  CHECK(SmoothedGain(nan).rampFrames() == 1);
+  CHECK(SmoothedGain(-48000.0f).rampFrames() == 1);
+  CHECK(SmoothedGain(0.0f).rampFrames() == 1);
+  CHECK(SmoothedGain(48000.0f, 1.0f, -1.0f).rampFrames() == 1);
+  CHECK(SmoothedGain(48000.0f, 1.0f, nan).rampFrames() == 1);
+
+  // A capped ramp still moves in the right direction and stays finite.
+  SmoothedGain g(inf, 0.0f);
+  g.setGain(1.0f);
+  const float first = g.next();
+  CHECK(first > 0.0f);
+  CHECK(first < 1.0f);
+  CHECK(std::isfinite(first));
+}
+
 TEST_CASE("the initial gain applies immediately", "[gain]") {
   SmoothedGain g(48000.0f, 0.7f);
   CHECK_FALSE(g.ramping());
