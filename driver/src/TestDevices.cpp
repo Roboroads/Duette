@@ -23,9 +23,7 @@ const float kTestToneAmplitude = static_cast<float>(std::pow(10.0, -12.0 / 20.0)
 class TestMicDevice final : public ClockedDevice {
  public:
   TestMicDevice(std::shared_ptr<const aspl::Context> context, std::shared_ptr<const SharedClock> clock)
-      : ClockedDevice(std::move(context), parameters(), std::move(clock)),
-        tone_(static_cast<float>(kSampleRate), static_cast<float>(DUETTE_TEST_MIC_TONE_HZ),
-              kTestToneAmplitude) {}
+      : ClockedDevice(std::move(context), parameters(), std::move(clock)) {}
 
  protected:
   bool willDo(UInt32 operationID) const noexcept override {
@@ -35,8 +33,15 @@ class TestMicDevice final : public ClockedDevice {
   void doIO(UInt32 operationID, UInt32 frames, const AudioServerPlugInIOCycleInfo& cycle,
             void* buffer) noexcept override {
     if (operationID != kAudioServerPlugInIOOperationReadInput || frames == 0) return;
-    tone_.fill(wholeSampleTime(cycle.mInputTime.mSampleTime), static_cast<float*>(buffer), frames,
-               kChannels);
+    // A pure function of sample time, like the self-test tone: safe for any number of readers.
+    const std::int64_t t = wholeSampleTime(cycle.mInputTime.mSampleTime);
+    auto* out = static_cast<float*>(buffer);
+    for (UInt32 i = 0; i < frames; ++i) {
+      const float x = toneSample(t + static_cast<std::int64_t>(i),
+                                 static_cast<std::uint32_t>(kSampleRate), DUETTE_TEST_MIC_TONE_HZ,
+                                 kTestToneAmplitude);
+      for (UInt32 c = 0; c < kChannels; ++c) out[i * kChannels + c] = x;
+    }
   }
 
  private:
@@ -55,8 +60,6 @@ class TestMicDevice final : public ClockedDevice {
     p.ClockDomain = 0;  // not synchronized with anything
     return p;
   }
-
-  BlockTone tone_;
 };
 
 class TestSpeakerDevice final : public ClockedDevice {

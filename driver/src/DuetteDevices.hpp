@@ -4,13 +4,15 @@
 // clock and one LoopbackBuffer: whatever a client writes to the sink at sample time t, a reader
 // of "Duette" gets back at sample time t.
 
+#include "LoopbackWriter.hpp"
+#include "SelfTestTone.hpp"
 #include "SharedClock.hpp"
 
 #include <aspl/Context.hpp>
 #include <aspl/Device.hpp>
 #include <aspl/Plugin.hpp>
 #include <duette/loopback_buffer.hpp>
-#include <duette/tone.hpp>
+#include <duette/smoothed_gain.hpp>
 
 #include <CoreAudio/AudioServerPlugIn.h>
 
@@ -31,6 +33,9 @@ inline constexpr UInt32 kZeroTimeStampPeriod = 16384;
 inline constexpr std::size_t kLoopbackFrames = 16384;
 /// How far behind "now" the input reads. Covers a sink write cycle that runs a little late.
 inline constexpr UInt32 kInputSafetyOffset = 16;
+/// Fade of the self-test tone: as long as SmoothedGain's ramps (5 ms, 240 frames).
+inline constexpr UInt32 kToneRampFrames = static_cast<UInt32>(
+    kSampleRate * static_cast<double>(duette::SmoothedGain::kDefaultRampSeconds) + 0.5);
 
 using Loopback = duette::LoopbackBuffer<kChannels, kLoopbackFrames>;
 
@@ -41,30 +46,6 @@ HostTimebase machTimebase() noexcept;
 
 /// 2-channel float32 interleaved stream format at `sampleRate`.
 AudioStreamBasicDescription floatStreamFormat(double sampleRate, UInt32 channels = kChannels);
-
-/// Fills IO blocks with a sine tone. Reading the same block twice (same start time) gives the
-/// same samples, so the tone stays clean however often the HAL asks for one cycle. IO thread
-/// only.
-class BlockTone {
- public:
-  BlockTone(float sampleRate, float frequencyHz, float amplitude) noexcept
-      : tone_(sampleRate, frequencyHz, amplitude), blockStart_(tone_) {}
-
-  void fill(std::int64_t sampleTime, float* out, std::size_t frames, std::size_t channels) noexcept {
-    if (sampleTime == lastStart_) {
-      tone_ = blockStart_;  // the same cycle again: replay it
-    } else {
-      blockStart_ = tone_;
-      lastStart_ = sampleTime;
-    }
-    tone_.fill(out, frames, channels);
-  }
-
- private:
-  duette::ToneGenerator tone_;
-  duette::ToneGenerator blockStart_;
-  std::int64_t lastStart_ = INT64_MIN;
-};
 
 /// An aspl::Device driven by a SharedClock, whose real-time entry points take no locks.
 ///
@@ -119,7 +100,7 @@ class DuetteInputDevice final : public ClockedDevice {
                     std::shared_ptr<const SharedClock> clock, std::shared_ptr<Loopback> loopback);
 
   /// Self-test tone on or off ('dtst').
-  bool selfTestTone() const noexcept { return selfTestTone_.load(std::memory_order_relaxed); }
+  bool selfTestTone() const noexcept { return tone_.on(); }
   void setSelfTestTone(bool on);
 
   /// PIDs of the clients doing input IO now ('dcli'), sorted, unique.
@@ -144,8 +125,7 @@ class DuetteInputDevice final : public ClockedDevice {
   bool updateIoClient(UInt32 clientID, pid_t pid, bool running);
 
   std::shared_ptr<Loopback> loopback_;
-  std::atomic<bool> selfTestTone_{false};
-  BlockTone tone_;
+  SelfTestTone tone_;
 
   // Kept on the IO thread, read off it (logged on StopIO).
   std::atomic<std::uint64_t> framesRead_{0};
@@ -174,6 +154,7 @@ class DuetteSinkDevice final : public ClockedDevice {
 
  private:
   std::shared_ptr<Loopback> loopback_;
+  LoopbackWriter<Loopback> writer_;  // after loopback_: it refers to it
   std::atomic<std::uint64_t> framesWritten_{0};
 };
 

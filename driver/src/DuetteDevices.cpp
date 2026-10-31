@@ -18,7 +18,6 @@ namespace duette::driver {
 
 namespace {
 
-constexpr float kSelfTestToneHz = static_cast<float>(DUETTE_SELF_TEST_TONE_HZ);
 // -12 dBFS peak.
 const float kSelfTestToneAmplitude =
     static_cast<float>(std::pow(10.0, static_cast<double>(DUETTE_SELF_TEST_TONE_DBFS) / 20.0));
@@ -62,7 +61,9 @@ aspl::DeviceParameters sinkParameters() {
   p.ZeroTimeStampPeriod = kZeroTimeStampPeriod;
   p.ClockIsStable = true;
   p.ClockDomain = DUETTE_CLOCK_DOMAIN;
-  p.EnableMixing = true;  // the HAL mixes all writers; WriteMix gets the sum
+  // The HAL mixes the clients of one IO context, so WriteMix gets their sum. Separate IO contexts
+  // (the app's aggregate and a direct client) each call WriteMix; LoopbackWriter sorts that out.
+  p.EnableMixing = true;
   p.EnableRealtimeTracing = false;
   return p;
 }
@@ -177,7 +178,8 @@ DuetteInputDevice::DuetteInputDevice(std::shared_ptr<const aspl::Context> contex
                                      std::shared_ptr<Loopback> loopback)
     : ClockedDevice(std::move(context), duetteParameters(), std::move(clock)),
       loopback_(std::move(loopback)),
-      tone_(static_cast<float>(kSampleRate), kSelfTestToneHz, kSelfTestToneAmplitude) {
+      tone_(static_cast<std::uint32_t>(kSampleRate), DUETTE_SELF_TEST_TONE_HZ,
+            kSelfTestToneAmplitude, kToneRampFrames) {
   // coreaudiod passes a plug-in's custom properties to clients only as CFString or
   // CFPropertyList, so both travel as CF objects (see duette_driver_protocol.h).
   RegisterCustomProperty(
@@ -192,8 +194,11 @@ DuetteInputDevice::DuetteInputDevice(std::shared_ptr<const aspl::Context> contex
 }
 
 void DuetteInputDevice::setSelfTestTone(bool on) {
-  const bool was = selfTestTone_.exchange(on, std::memory_order_relaxed);
-  if (was != on) {
+  // The fade starts at the device's current sample time; readers are a buffer or so behind that,
+  // so they hear the old state until then and the fade after.
+  const SharedClock& clock = ioClock();
+  const auto now = static_cast<std::int64_t>(std::floor(clock.sampleTimeAt(clock.hostNow())));
+  if (tone_.set(on, now)) {
     os_log_info(driverLog(), "Duette: self-test tone %{public}s", on ? "on" : "off");
     // So a UI shows the change when another client (duettectl) flips it.
     NotifyPropertyChanged(DUETTE_PROPERTY_SELF_TEST_TONE);
@@ -317,14 +322,14 @@ void DuetteInputDevice::doIO(UInt32 operationID, UInt32 frames,
   if (operationID != kAudioServerPlugInIOOperationReadInput || frames == 0) return;
   auto* out = static_cast<float*>(buffer);
   const std::int64_t t = wholeSampleTime(cycle.mInputTime.mSampleTime);
-  if (selfTestTone_.load(std::memory_order_relaxed)) {
-    tone_.fill(t, out, frames, kChannels);
-    framesRead_.fetch_add(frames, std::memory_order_relaxed);
-    return;
-  }
-  const std::size_t valid = loopback_->read(t, out, frames);
+  std::size_t missing = 0;
+  // Several clients may read "Duette", from several IO threads; the tone keeps no per-call
+  // state, so this is safe for all of them.
+  tone_.render(t, out, frames, kChannels, [&](float* into, std::size_t n) {
+    missing = n - loopback_->read(t, into, n);
+  });
   framesRead_.fetch_add(frames, std::memory_order_relaxed);
-  framesWithoutData_.fetch_add(frames - valid, std::memory_order_relaxed);
+  framesWithoutData_.fetch_add(missing, std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------- DuetteSinkDevice
@@ -333,7 +338,8 @@ DuetteSinkDevice::DuetteSinkDevice(std::shared_ptr<const aspl::Context> context,
                                    std::shared_ptr<const SharedClock> clock,
                                    std::shared_ptr<Loopback> loopback)
     : ClockedDevice(std::move(context), sinkParameters(), std::move(clock)),
-      loopback_(std::move(loopback)) {}
+      loopback_(std::move(loopback)),
+      writer_(*loopback_) {}
 
 OSStatus DuetteSinkDevice::StartIOImpl(UInt32 clientID, UInt32 startCount) {
   const OSStatus status = ClockedDevice::StartIOImpl(clientID, startCount);
@@ -350,8 +356,16 @@ OSStatus DuetteSinkDevice::StopIOImpl(UInt32 clientID, UInt32 startCount) {
   os_log_info(driverLog(), "Duette Sink: StopIO client %u, %u writers left",
               static_cast<unsigned>(clientID), static_cast<unsigned>(startCount));
   if (startCount == 0) {
-    os_log_info(driverLog(), "Duette Sink: output stopped; %llu frames written",
-                static_cast<unsigned long long>(framesWritten_.load(std::memory_order_relaxed)));
+    const auto blocks = writer_.stats();
+    os_log_info(driverLog(),
+                "Duette Sink: output stopped; %llu frames written. Blocks since load: %llu "
+                "written, %llu trimmed, %llu dropped as already written, %llu dropped while "
+                "another IO context was writing",
+                static_cast<unsigned long long>(framesWritten_.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(blocks.written),
+                static_cast<unsigned long long>(blocks.trimmed),
+                static_cast<unsigned long long>(blocks.droppedOverlap),
+                static_cast<unsigned long long>(blocks.droppedBusy));
   }
   return status;
 }
@@ -364,8 +378,10 @@ void DuetteSinkDevice::doIO(UInt32 operationID, UInt32 frames,
                             const AudioServerPlugInIOCycleInfo& cycle, void* buffer) noexcept {
   if (operationID != kAudioServerPlugInIOOperationWriteMix || frames == 0) return;
   const std::int64_t t = wholeSampleTime(cycle.mOutputTime.mSampleTime);
-  loopback_->write(t, static_cast<const float*>(buffer), frames);
-  framesWritten_.fetch_add(frames, std::memory_order_relaxed);
+  const LoopbackWriteResult r = writer_.write(t, static_cast<const float*>(buffer), frames);
+  if (r == LoopbackWriteResult::Written || r == LoopbackWriteResult::Trimmed) {
+    framesWritten_.fetch_add(frames, std::memory_order_relaxed);
+  }
 }
 
 // --------------------------------------------------------------------------------- assembly

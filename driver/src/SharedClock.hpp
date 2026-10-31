@@ -89,6 +89,12 @@ class SharedClock {
   /// Zero timestamp right now.
   ZeroTimeStamp now() const noexcept { return at(hostNow_()); }
 
+  /// Sample time (not rounded to a period) at host time `hostTime`; 0 before the anchor.
+  double sampleTimeAt(std::uint64_t hostTime) const noexcept {
+    if (hostTime <= anchor_) return 0.0;
+    return static_cast<double>(hostTime - anchor_) / ticksPerFrame_;
+  }
+
   std::uint64_t hostNow() const noexcept { return hostNow_(); }
   std::uint64_t anchorHostTime() const noexcept { return anchor_; }
   double sampleRate() const noexcept { return sampleRate_; }

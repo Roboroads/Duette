@@ -172,3 +172,14 @@ TEST_CASE("invalid settings fall back to safe values") {
   CHECK(clock.hostTicksPerFrame() > 0.0);
   CHECK(clock.at(kAnchor + 10'000'000'000ull).sampleTime >= 0.0);
 }
+
+TEST_CASE("sampleTimeAt gives the exact sample time between timestamps") {
+  const SharedClock clock(&stubHostNow, kAppleSilicon, kAnchor, config48k());
+  CHECK(clock.sampleTimeAt(kAnchor) == 0.0);
+  CHECK(clock.sampleTimeAt(kAnchor - 10) == 0.0);
+  CHECK(clock.sampleTimeAt(kAnchor + 500u * 12345u) == 12345.0);
+  CHECK(clock.sampleTimeAt(kAnchor + 500u * 12345u + 250u) == 12345.5);
+  // It agrees with the zero timestamps at every boundary.
+  const std::uint64_t boundary = kAnchor + 500u * 16384u * 7u;
+  CHECK(clock.sampleTimeAt(boundary) == clock.at(boundary).sampleTime);
+}

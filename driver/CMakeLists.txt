@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.24)
+# 3.28: FetchContent SYSTEM (3.25) and EXCLUDE_FROM_ALL (3.28).
+cmake_minimum_required(VERSION 3.28)
 
 # Apple Silicon, macOS 14.2+. Set before project() so libASPL is built the same way (APPLE is
 # not known yet here; other platforms ignore both).
@@ -65,9 +66,14 @@ if(DUETTE_DRIVER_BUILD_TESTS)
   list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
   include(Catch)
 
-  add_executable(duette_driver_tests tests/shared_clock_tests.cpp)
+  find_package(Threads REQUIRED)
+  add_executable(duette_driver_tests
+    tests/shared_clock_tests.cpp
+    tests/loopback_writer_tests.cpp
+    tests/self_test_tone_tests.cpp)
   target_include_directories(duette_driver_tests PRIVATE src include)
-  target_link_libraries(duette_driver_tests PRIVATE duette_driver_warnings Catch2::Catch2WithMain)
+  target_link_libraries(duette_driver_tests PRIVATE
+    duette::core duette_driver_warnings Catch2::Catch2WithMain Threads::Threads)
   catch_discover_tests(duette_driver_tests PROPERTIES TIMEOUT 120)
 
   # The protocol header is plain C and has to stay that way: the app imports it from Swift.
