@@ -477,6 +477,8 @@ Send the diagnostics zip and the step number. Say how Discord was set, and wheth
 3. Wait 5 seconds and open the Duette menu.
 4. Click "Open Settings".
 5. Switch Duette on again and watch the menu.
+6. Now the other way round. With Duette running, Discord playing sound and the "Sound from Discord" bar moving, go back to System Settings and switch Duette off, without quitting Duette. Keep Discord playing sound and watch the Duette menu for 15 seconds.
+7. Switch Duette on again.
 
 **Expect**
 
@@ -484,6 +486,7 @@ Send the diagnostics zip and the step number. Say how Discord was set, and wheth
 - Your microphone keeps working: a recording of "Duette" still has your voice.
 - "Open Settings" opens Privacy & Security on the Screen & System Audio Recording page.
 - After you switch Duette on again, the red line goes away and the other person's sound is back within a few seconds. If it doesn't, quit and reopen Duette, and note that you had to.
+- In step 6 the same red line shows within about 10 seconds, without quitting Duette. A quiet moment in the call does not turn it red, only the switch does. If macOS asks to quit Duette when you switch it off, let it, open Duette again and write that down. If the line stays green for the 15 seconds although the "Sound from Discord" bar has gone still, write that down too: quitting and opening Duette shows it as in steps 2 and 3.
 
 **Part B: microphone**
 
