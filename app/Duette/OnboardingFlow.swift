@@ -72,10 +72,16 @@ struct OnboardingText: Equatable {
                     + "Your Mac will ask you to allow it. Choose OK.",
                 button: "Allow microphone")
         case .appSound:
-            let app = appName ?? "the app you share"
+            guard let appName else {
+                return OnboardingText(
+                    title: "Let Duette hear your app",
+                    body: "Pick the app whose sound you want to share, like Discord. "
+                        + "You can change it later in the menu.",
+                    button: "Continue")
+            }
             return OnboardingText(
-                title: "Let Duette hear \(appName ?? "your app")",
-                body: "Duette shares the sound of \(app). The first time, your Mac asks if Duette may record it. "
+                title: "Let Duette hear \(appName)",
+                body: "Duette shares the sound of \(appName). The first time, your Mac asks if Duette may record it. "
                     + "Choose Allow. You can pick a different app later from the Duette icon at the top of your screen.",
                 button: "Continue")
         case .finish:
