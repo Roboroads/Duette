@@ -4,18 +4,21 @@ import DuetteEngine
 /// Where each source sits in the aggregate's buffer lists, for the engine.
 public struct EngineLayout: Equatable, Codable {
     public var mic: BufferRange
+    public var tap: BufferRange
     public var output: BufferRange
     public var sampleRate: Double
 
-    public init(mic: BufferRange = .none, output: BufferRange, sampleRate: Double) {
+    public init(mic: BufferRange = .none, tap: BufferRange = .none, output: BufferRange, sampleRate: Double) {
         self.mic = mic
+        self.tap = tap
         self.output = output
         self.sampleRate = sampleRate
     }
 
     /// The layout for a resolved aggregate: input ranges from `input`, the sink's from `output`.
     public init(input: StreamLayout, output: StreamLayout, sampleRate: Double) {
-        self.init(mic: input.range(.mic), output: output.range(.sink), sampleRate: sampleRate)
+        self.init(mic: input.range(.mic), tap: input.range(.tap), output: output.range(.sink),
+                  sampleRate: sampleRate)
     }
 }
 
@@ -47,8 +50,8 @@ public final class MixEngine {
 
     /// Sets the buffer layout. Only while stopped.
     public func configure(_ layout: EngineLayout) throws {
-        var raw = duette_layout(mic: Self.raw(layout.mic), output: Self.raw(layout.output),
-                                sample_rate: layout.sampleRate)
+        var raw = duette_layout(mic: Self.raw(layout.mic), tap: Self.raw(layout.tap),
+                                output: Self.raw(layout.output), sample_rate: layout.sampleRate)
         let status = duette_engine_configure(handle, &raw)
         if status == DUETTE_STATUS_OK { return }
         if status == DUETTE_STATUS_RUNNING { throw MixEngineError.running }

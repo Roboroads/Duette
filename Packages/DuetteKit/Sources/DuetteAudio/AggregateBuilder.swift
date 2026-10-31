@@ -9,15 +9,19 @@ public struct AggregateSpec: Equatable {
     public var sinkUID: String
     /// The mic, as a second subdevice with drift compensation, or nil for no mic.
     public var micUID: String?
+    /// The app's process tap, in the tap list with drift compensation, or nil for no app.
+    public var tapUID: String?
     public var name: String
 
     public init(ownerPID: pid_t = ProcessInfo.processInfo.processIdentifier,
                 sinkUID: String = DuetteDriver.sinkUID,
                 micUID: String? = nil,
+                tapUID: String? = nil,
                 name: String = "Duette Engine") {
         self.ownerPID = ownerPID
         self.sinkUID = sinkUID
         self.micUID = micUID
+        self.tapUID = tapUID
         self.name = name
     }
 
@@ -27,8 +31,9 @@ public struct AggregateSpec: Equatable {
 /// Builds the description dictionary for AudioHardwareCreateAggregateDevice.
 ///
 /// The aggregate is private (only this process sees it, and it dies with the process), not
-/// stacked, and clocked by the sink. The mic is resampled to the sink's clock by the aggregate's
-/// drift compensation. A running aggregate is never changed: any change means a new one.
+/// stacked, and clocked by the sink. The mic and the tap are resampled to the sink's clock by the
+/// aggregate's drift compensation. A running aggregate is never changed: any change means a new
+/// one.
 public enum AggregateBuilder {
     public static func description(for spec: AggregateSpec) -> [String: Any] {
         var subdevices: [[String: Any]] = [[kAudioSubDeviceUIDKey: spec.sinkUID]]
@@ -38,7 +43,7 @@ public enum AggregateBuilder {
                 kAudioSubDeviceDriftCompensationKey: 1,
             ])
         }
-        return [
+        var description: [String: Any] = [
             kAudioAggregateDeviceNameKey: spec.name,
             kAudioAggregateDeviceUIDKey: spec.uid,
             kAudioAggregateDeviceIsPrivateKey: 1,
@@ -47,5 +52,13 @@ public enum AggregateBuilder {
             kAudioAggregateDeviceClockDeviceKey: spec.sinkUID,
             kAudioAggregateDeviceSubDeviceListKey: subdevices,
         ]
+        if let tap = spec.tapUID {
+            description[kAudioAggregateDeviceTapListKey] = [[
+                kAudioSubTapUIDKey: tap,
+                kAudioSubTapDriftCompensationKey: true,
+            ] as [String: Any]]
+            description[kAudioAggregateDeviceTapAutoStartKey] = true
+        }
+        return description
     }
 }

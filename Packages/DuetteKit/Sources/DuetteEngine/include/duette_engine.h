@@ -2,8 +2,10 @@
  * duette_engine.h: the real-time mix engine, reached from Swift through this C header.
  *
  * The engine runs as the IOProc of Duette's private aggregate device. Every cycle it reads the
- * mic's input streams, mixes them, and writes the result to the output streams of the hidden
- * "Duette Sink", which the driver loops back to the "Duette" input device.
+ * mic's and the app tap's input streams, mixes them, and writes the result to the output streams
+ * of the hidden "Duette Sink", which the driver loops back to the "Duette" input device:
+ *
+ *   out[L,R] = clip(tap[L,R] + mono(mic))
  *
  * Threads:
  *  - duette_engine_ioproc runs on the HAL I/O thread. It does not allocate, lock, log or call
@@ -50,6 +52,9 @@ typedef struct duette_range {
 typedef struct duette_layout {
   /// The mic's buffers in the input buffer list. All its channels are averaged to mono.
   duette_range mic;
+  /// The app tap's buffers in the input buffer list. Its first two channels are left and right;
+  /// a single channel goes to both sides.
+  duette_range tap;
   /// The sink's buffers in the output buffer list. Its first two channels get left and right.
   /// Every other output buffer is filled with silence.
   duette_range output;

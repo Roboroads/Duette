@@ -136,10 +136,12 @@ OSStatus duette_engine_ioproc(AudioObjectID /*device*/, const AudioTimeStamp* /*
   if (!findStereoOut(output, layout.output, out, frames)) return noErr;
 
   duette::SourceView mic;
+  duette::SourceView tap;
   if (inRange(input, layout.mic)) collect(input, layout.mic, mic, frames);
+  if (inRange(input, layout.tap)) collect(input, layout.tap, tap, frames);
   if (frames == kNoLimit) frames = 0;
 
-  engine->mixer.process(duette::SourceView{}, mic, out, frames);
+  engine->mixer.process(tap, mic, out, frames);
   return noErr;
 }
 

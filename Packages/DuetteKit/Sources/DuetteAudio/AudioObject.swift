@@ -291,6 +291,34 @@ public enum HAL {
                                isPrivateAggregate: isPrivateAggregate)
     }
 
+    /// Every process object: the processes that are Core Audio clients right now.
+    public static func processObjectIDs() throws -> [AudioObjectID] {
+        try AudioObject.system.getArray(kAudioHardwarePropertyProcessObjectList, of: AudioObjectID.self)
+    }
+
+    /// PID, bundle ID and running state of a process object, or nil if it is gone.
+    public static func processInfo(_ id: AudioObjectID) -> AudioProcessInfo? {
+        let object = AudioObject(id)
+        guard let pid = try? object.get(kAudioProcessPropertyPID, as: pid_t.self) else { return nil }
+        let bundleID = (try? object.getString(kAudioProcessPropertyBundleID)) ?? ""
+        let output = (try? object.get(kAudioProcessPropertyIsRunningOutput, as: UInt32.self)) ?? 0
+        let input = (try? object.get(kAudioProcessPropertyIsRunningInput, as: UInt32.self)) ?? 0
+        return AudioProcessInfo(objectID: id, pid: pid, bundleID: bundleID,
+                                isRunningOutput: output != 0, isRunningInput: input != 0)
+    }
+
+    /// The process object of `pid`, or nil if the process is not a Core Audio client.
+    public static func processObjectID(forPID pid: pid_t) -> AudioObjectID? {
+        var address = AudioObject.address(kAudioHardwarePropertyTranslatePIDToProcessObject)
+        var qualifier = pid
+        var object = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(AudioObject.system.id, &address, UInt32(MemoryLayout<pid_t>.size),
+                                                &qualifier, &size, &object)
+        guard status == kNoError, object != 0 else { return nil }
+        return object
+    }
+
     /// The device's streams in `scope`, with format and owner, in the order the HAL lists them.
     public static func streams(of device: AudioObjectID, scope: AudioObjectPropertyScope) throws -> [StreamInfo] {
         let ids = try AudioObject(device).getArray(kAudioDevicePropertyStreams, scope: scope, of: AudioObjectID.self)

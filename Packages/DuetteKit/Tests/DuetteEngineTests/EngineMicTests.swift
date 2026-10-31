@@ -22,7 +22,7 @@ final class EngineMicTests: XCTestCase {
 
     private func configure(mic: duette_range, output: duette_range, rate: Double = 48000,
                            file: StaticString = #filePath, line: UInt = #line) {
-        var layout = duette_layout(mic: mic, output: output, sample_rate: rate)
+        var layout = duette_layout(mic: mic, tap: range(0, 0), output: output, sample_rate: rate)
         XCTAssertEqual(duette_engine_configure(engine, &layout), DUETTE_STATUS_OK, file: file, line: line)
     }
 
@@ -120,11 +120,11 @@ final class EngineMicTests: XCTestCase {
     }
 
     func testConfigureRejectsBadLayouts() {
-        var noOutput = duette_layout(mic: range(0, 1), output: range(0, 0), sample_rate: 48000)
+        var noOutput = duette_layout(mic: range(0, 1), tap: range(0, 0), output: range(0, 0), sample_rate: 48000)
         XCTAssertEqual(duette_engine_configure(engine, &noOutput), DUETTE_STATUS_INVALID_ARGUMENT)
-        var noRate = duette_layout(mic: range(0, 1), output: range(0, 1), sample_rate: 0)
+        var noRate = duette_layout(mic: range(0, 1), tap: range(0, 0), output: range(0, 1), sample_rate: 0)
         XCTAssertEqual(duette_engine_configure(engine, &noRate), DUETTE_STATUS_INVALID_ARGUMENT)
-        var nanRate = duette_layout(mic: range(0, 1), output: range(0, 1), sample_rate: .nan)
+        var nanRate = duette_layout(mic: range(0, 1), tap: range(0, 0), output: range(0, 1), sample_rate: .nan)
         XCTAssertEqual(duette_engine_configure(engine, &nanRate), DUETTE_STATUS_INVALID_ARGUMENT)
     }
 

@@ -22,6 +22,7 @@ public struct StreamInfo: Equatable, Hashable, Codable {
 public enum StreamRole: String, Codable, Hashable, CaseIterable {
     case sink
     case mic
+    case tap
 }
 
 /// A run of buffers in an IOProc's AudioBufferList.
