@@ -135,7 +135,10 @@ final class DiagnosticsTests: XCTestCase {
                                      inputSafetyOffset: 20, outputSafetyOffset: 30)
         let duette = DeviceTiming(bufferFrameSize: 256, inputLatency: 0, inputSafetyOffset: 16)
         let estimate = LatencyModel.estimate(aggregate: aggregate, duette: duette, sampleRate: 48000)
-        XCTAssertEqual(estimate.frames, 128 * 2 + 40 + 20 + 10 + 30 + 256 + 0 + 16)
+        let buffers: UInt32 = 128 * 2
+        let aggregateHops: UInt32 = 40 + 20 + 10 + 30
+        let duetteHop: UInt32 = 256 + 0 + 16
+        XCTAssertEqual(estimate.frames, buffers + aggregateHops + duetteHop)
         XCTAssertEqual(estimate.milliseconds, Double(estimate.frames) / 48, accuracy: 1e-9)
         XCTAssertEqual(LatencyModel.estimate(aggregate: DeviceTiming(bufferFrameSize: 64), duette: nil, sampleRate: 48000).frames, 128)
     }
@@ -174,7 +177,9 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertEqual(engine.status.configuration.bufferFrameSize, 256)
         XCTAssertEqual(engine.gains["mic"], 1.5)
         XCTAssertEqual(engine.mutes["app"], false)
-        XCTAssertEqual(engine.estimatedLatency?.frames, 256 * 2 + 40 + 256 + 20)
+        // Two 256-frame buffers and 4 x 10 on the aggregate, then 256 + 2 x 10 for "Duette".
+        let expectedFrames: UInt32 = 828
+        XCTAssertEqual(engine.estimatedLatency?.frames, expectedFrames)
         XCTAssertEqual(engine.measuredLatencyMilliseconds, 9.5)
         XCTAssertGreaterThan(engine.meters.samples, 0)
         XCTAssertEqual(report.permissions["microphone"], "authorized")
