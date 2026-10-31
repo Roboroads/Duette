@@ -61,7 +61,7 @@ remove_path() {
 
 forget_receipts() {
   local id found=0
-  for id in $(/usr/sbin/pkgutil --pkgs='me\.roboroads\.duette' 2> /dev/null); do
+  for id in $(/usr/sbin/pkgutil --pkgs 2> /dev/null | /usr/bin/grep '^me\.roboroads\.duette'); do
     /usr/sbin/pkgutil --forget "$id" > /dev/null 2>&1 && echo "Forgot installer receipt $id"
     found=1
   done

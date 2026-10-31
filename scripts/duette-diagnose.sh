@@ -106,7 +106,7 @@ audio_json="$(/usr/sbin/system_profiler SPAudioDataType -json 2> /dev/null)"
   echo "  \"app\": { \"installed\": $(exists_json "$APP"), \"running\": $app_running, \"version\": $(json_str "$(bundle_version "$APP")"), \"build\": $(json_str "$(bundle_build "$APP")") },"
   echo "  \"driver\": { \"installed\": $(exists_json "$DRIVER"), \"version\": $(json_str "$(bundle_version "$DRIVER")"), \"build\": $(json_str "$(bundle_build "$DRIVER")") },"
   echo "  \"supportFolderInstalled\": $(exists_json "$SUPPORT"),"
-  echo "  \"receipts\": $(json_str "$(/usr/sbin/pkgutil --pkgs='me\.roboroads\.duette' 2> /dev/null)"),"
+  echo "  \"receipts\": $(json_str "$(/usr/sbin/pkgutil --pkgs 2> /dev/null | /usr/bin/grep '^me\.roboroads\.duette')"),"
   echo "  \"audioDevices\": $audio_json,"
   echo "  \"engine\": null"
   echo "}"
@@ -145,7 +145,7 @@ audio_json="$(/usr/sbin/system_profiler SPAudioDataType -json 2> /dev/null)"
   /usr/bin/pgrep -lf 'Duette' 2>&1
   echo
   echo "--- installer receipts"
-  for id in $(/usr/sbin/pkgutil --pkgs='me\.roboroads\.duette' 2> /dev/null); do
+  for id in $(/usr/sbin/pkgutil --pkgs 2> /dev/null | /usr/bin/grep '^me\.roboroads\.duette'); do
     /usr/sbin/pkgutil --pkg-info "$id" 2>&1
     echo
   done

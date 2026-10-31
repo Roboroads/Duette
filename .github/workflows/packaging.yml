@@ -104,6 +104,41 @@ jobs:
           path: build/release
           if-no-files-found: ignore
 
+  # Exercises the Developer ID code path (temporary keychain, identity lookup,
+  # hardened runtime signing, productbuild --sign) with throwaway self-signed
+  # identities named like Apple's. They cannot be notarized, and Apple's
+  # timestamp and installer-signing checks may reject them, so this is an
+  # experiment that cannot fail the run. Read its log to see how far it got.
+  signing-probe:
+    name: signing path probe (macOS, self-signed, informational)
+    runs-on: macos-15
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make stub bundles
+        run: bash packaging/tests/make-stub-bundles.sh
+
+      - name: Make self-signed identities
+        run: bash packaging/tests/make-test-identities.sh "$RUNNER_TEMP/identities"
+
+      - name: Import, sign, build the pkg
+        env:
+          APPLE_TEAM_ID: TEST123456
+        run: |
+          MACOS_CERT_APP_P12_BASE64="$(cat "$RUNNER_TEMP/identities/application.p12.b64")"
+          MACOS_CERT_INSTALLER_P12_BASE64="$(cat "$RUNNER_TEMP/identities/installer.p12.b64")"
+          MACOS_CERT_PASSWORD="$(cat "$RUNNER_TEMP/identities/password")"
+          export MACOS_CERT_APP_P12_BASE64 MACOS_CERT_INSTALLER_P12_BASE64 MACOS_CERT_PASSWORD
+          bash scripts/sign.sh import-certs
+          bash scripts/sign.sh bundles
+          bash scripts/build-pkg.sh
+
+      - name: Delete the temporary keychain
+        if: ${{ always() }}
+        run: bash scripts/sign.sh cleanup
+
   # Run by hand to check the repo secrets before the real app exists: signs the
   # stub bundles with the Developer ID certificates, signs and notarizes the
   # pkg, and fails if the secrets are set but notarization does not succeed.
