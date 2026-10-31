@@ -226,7 +226,7 @@ public final class CoreAudioSystem: AudioSystem {
     // MARK: Driver
 
     public func inputClientPIDs() -> [pid_t]? {
-        HAL.driverInputClients()
+        HAL.inputReaderPIDs()
     }
 
     // MARK: Building blocks
