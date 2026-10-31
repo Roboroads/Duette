@@ -73,6 +73,7 @@ final class FakeAudioSystem: AudioSystem {
     /// What macOS says about System Audio Recording.
     var captureAuthorization: CaptureAuthorization = .unknown
     private(set) var captureAuthorizationChecks = 0
+    var captureRawAnswer: Int32?
 
     // Failures to hand out, first one first.
     var tapErrors: [OSStatus] = []
@@ -211,6 +212,8 @@ final class FakeAudioSystem: AudioSystem {
         captureAuthorizationChecks += 1
         return captureAuthorization
     }
+
+    func systemAudioCaptureRawAnswer() -> Int32? { captureRawAnswer }
 
     func createTap(_ spec: TapSpec) throws -> ProcessTap {
         if !tapErrors.isEmpty { throw CoreAudioError(tapErrors.removeFirst(), "create the process tap") }

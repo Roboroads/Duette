@@ -104,6 +104,9 @@ public protocol AudioSystem: AnyObject {
     // Permission
     /// What macOS says about System Audio Recording for Duette right now, or `.unknown`.
     func systemAudioCaptureAuthorization() -> CaptureAuthorization
+    /// The number macOS answered with, as it came (0 allowed, 1 denied, 2 not asked yet), or nil
+    /// when it was not asked or could not answer. For diagnostics.
+    func systemAudioCaptureRawAnswer() -> Int32?
 
     // Measuring
     /// Plays a test chirp into the sink and records "Duette", both at `bufferFrameSize`
@@ -121,6 +124,9 @@ extension AudioSystem {
 
     /// Unknown by default, which leaves the permission hint to the tap's own silence.
     public func systemAudioCaptureAuthorization() -> CaptureAuthorization { .unknown }
+
+    /// No answer by default.
+    public func systemAudioCaptureRawAnswer() -> Int32? { nil }
 
     /// Not possible by default.
     public func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
