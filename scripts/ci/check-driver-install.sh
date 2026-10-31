@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI install check for the HAL plug-in, run on the macOS runner after scripts/ci/build-driver.sh.
+# CI install check for the HAL plug-in (macOS only). Run by the "Install check (driver)" step.
 #
 #  1. Install build/out/Duette.driver with scripts/install.sh (restarts coreaudiod).
 #  2. system_profiler lists "Duette" and not "Duette Sink".
@@ -7,6 +7,9 @@
 #     loopback through the sink, shared clock.
 #  4. Install build/test-out/Duette.driver: the test devices appear and behave.
 #  5. scripts/uninstall.sh removes it again.
+#
+# It uses only build-driver.sh's products in build/out/ and build/test-out/, and runs
+# build-driver.sh itself when they are missing, so it also works on a clean checkout.
 #
 # GitHub's macos-15 runners load an ad-hoc signed plug-in after `killall coreaudiod` (spike S3),
 # so a failure here is a real failure.
@@ -18,8 +21,9 @@ probe=$repo_root/build/test-out/duette-driver-probe
 
 for f in build/out/Duette.driver build/test-out/Duette.driver "$probe"; do
   if [ ! -e "$f" ]; then
-    echo "install_check.sh: $f is missing; run scripts/ci/build-driver.sh first" >&2
-    exit 1
+    echo "==> $f is missing; building the driver first"
+    bash scripts/ci/build-driver.sh
+    break
   fi
 done
 
@@ -29,20 +33,27 @@ fail() {
   failed=1
 }
 
-# Run while the plug-in is still installed: log show needs its binary to format the messages.
-log_dumped=no
-dump_log() {
-  [ "$log_dumped" = no ] || return 0
-  log_dumped=yes
-  echo "::group::driver log (last 10 minutes)"
-  /usr/bin/log show --last 10m --info --debug \
+# The driver's log for the plug-in installed now. Run it before that plug-in is replaced or
+# removed: log show needs the binary to format the messages.
+phase_start=$(date '+%Y-%m-%d %H:%M:%S')
+phase_logged=no
+dump_log() { # label
+  phase_logged=yes
+  echo "::group::driver log: $1"
+  /usr/bin/log show --start "$phase_start" --info --debug \
     --predicate 'subsystem == "me.roboroads.duette.driver" AND category == "driver"' 2>/dev/null |
     tail -n 200 || true
   echo "::endgroup::"
 }
 
+install_driver() { # bundle
+  phase_start=$(date '+%Y-%m-%d %H:%M:%S')
+  phase_logged=no
+  sudo bash scripts/install.sh --driver "$1" --no-app
+}
+
 cleanup() {
-  dump_log
+  [ "$phase_logged" = yes ] || dump_log "at exit"
   sudo bash "$repo_root/scripts/uninstall.sh" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -66,7 +77,7 @@ wait_for_device_name() { # name, seconds
 }
 
 echo "::group::install build/out/Duette.driver"
-sudo bash scripts/install.sh --driver build/out/Duette.driver --no-app
+install_driver build/out/Duette.driver
 echo "::endgroup::"
 
 echo "::group::system_profiler SPAudioDataType"
@@ -91,9 +102,10 @@ fi
 echo "::group::duette-driver-probe check"
 "$probe" check || fail "duette-driver-probe check failed"
 echo "::endgroup::"
+dump_log "shippable plug-in"
 
 echo "::group::install build/test-out/Duette.driver (test devices)"
-sudo bash scripts/install.sh --driver build/test-out/Duette.driver --no-app
+install_driver build/test-out/Duette.driver
 echo "::endgroup::"
 wait_for_device_name 'Duette Test Speaker' 30 || true
 devices=$(audio_devices)
@@ -109,8 +121,7 @@ done
 echo "::group::duette-driver-probe test-devices"
 "$probe" test-devices || fail "duette-driver-probe test-devices failed"
 echo "::endgroup::"
-
-dump_log
+dump_log "test-device plug-in"
 
 echo "::group::uninstall"
 sudo bash scripts/uninstall.sh

@@ -5,7 +5,8 @@
 | Script | Job | Owns |
 |---|---|---|
 | `test-core.sh` | `core-linux`, `macos-build` | Build and test `core/` (CMake and ctest, plus sanitizer runs). |
-| `build-driver.sh` | `macos-build` | Build `Duette.driver` from `driver/`. |
+| `build-driver.sh` | `macos-build` | Build `Duette.driver` from `driver/` and run its unit tests. |
+| `check-driver-install.sh` | `macos-build` | Install the driver on the runner, restart coreaudiod, check the devices with `duette-driver-probe`, uninstall. |
 | `build-kit.sh` | `macos-build` | `swift build` and `swift test` for `Packages/DuetteKit`. |
 | `build-app.sh` | `macos-build` | Generate the Xcode project with XcodeGen, then `xcodebuild build test` for the app. |
 | `build-cli.sh` | `macos-build` | Build and test `tools/duettectl`. |
@@ -17,8 +18,8 @@
 - Run from the repo root and `cd` there first if you need relative paths: `cd "$(dirname "$0")/../.."`.
 - Start with `set -euo pipefail` and exit non-zero on any failure. Don't swallow errors.
 - Don't assume anything is preinstalled beyond what `ubuntu-latest` and `macos-15` ship. Install what you need inside the script (`brew install xcodegen`).
-- `test-core.sh` must also work on Linux. The other four are macOS-only.
-- Scripts run on a clean checkout and must not depend on a previous script having run.
+- `test-core.sh` must also work on Linux. The others are macOS-only.
+- Scripts run on a clean checkout and must not depend on a previous script having run. The one exception is `check-driver-install.sh`, which tests what `build-driver.sh` built: it reads only that script's products in `build/out/` and `build/test-out/`, and runs `build-driver.sh` itself when they are missing.
 
 ## Output contract
 
@@ -30,7 +31,7 @@ Build scripts write their products to `build/out/` (git-ignored) under exactly t
 | `build/out/Duette.app` | `build-app.sh` |
 | `build/out/duettectl` | `build-cli.sh` |
 
-Everything in `build/out/` is a shippable build: Release configuration, arm64, unsigned or ad-hoc signed, and built without the test devices (`DUETTE_TEST_DEVICES` off). Debug builds and test-device variants go to `build/test-out/`, which packaging never reads.
+Everything in `build/out/` is a shippable build: Release configuration, arm64, unsigned or ad-hoc signed, and built without the test devices (`DUETTE_TEST_DEVICES` off). Debug builds and test-device variants go to `build/test-out/`, which packaging never reads. `build-driver.sh` puts two there: `build/test-out/Duette.driver` (with the test devices) and `build/test-out/duette-driver-probe` (the CoreAudio client `check-driver-install.sh` runs).
 
 Each script runs `mkdir -p build/out` and replaces any existing product of the same name, so a re-run never mixes old and new output.
 
