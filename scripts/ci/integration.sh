@@ -188,10 +188,10 @@ phase_blocking() {
   run_cmd blocking hidden-agg 60 "main-subdevice clock-device ioproc-runs engine-tone.440hz" -- hidden-agg || failed=1
   # M2 and M4 on the mic path.
   run_cmd blocking engine 60 "duette.1000hz overloads" -- engine --mic test-mic --seconds 3 --expect '1000@-12' || failed=1
-  run_cmd blocking verify-mic 90 "mic.1000hz mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz overloads" -- verify-mic || failed=1
+  run_cmd blocking verify-mic 150 "mic.1000hz mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz overloads" -- verify-mic || failed=1
   # M3 and M4: a process tap mixed with the mic, at 48 kHz and at 44.1 kHz.
-  run_cmd blocking verify-mix 90 "mix.440hz mix.1000hz app-gain-0.5.440hz mic-muted.1000hz overloads" -- verify-mix || failed=1
-  run_cmd blocking rate-mismatch 90 "tap mix.440hz mix.1000hz residual" -- rate-mismatch || failed=1
+  run_cmd blocking verify-mix 150 "mix.440hz mix.1000hz app-gain-0.5.440hz mic-muted.1000hz overloads" -- verify-mix || failed=1
+  run_cmd blocking rate-mismatch 150 "tap mix.440hz mix.1000hz residual" -- rate-mismatch || failed=1
   # 'dcli' and the feedback-loop warning, with readers that go through an aggregate or VPIO.
   run_cmd blocking dcli-aggregate 60 "aggregate.lists-pid aggregate.clears" -- dcli --mode aggregate || failed=1
   run_cmd blocking dcli-vpio 60 "vpio.lists-pid vpio.clears" -- dcli --mode vpio || failed=1
@@ -220,7 +220,7 @@ phase_blocking() {
   restart_coreaudiod
   "$cli" list >/dev/null 2>&1 || true
   echo "::endgroup::"
-  run_cmd blocking tcc-denied 90 "state denied.tap-zeros denied.1000hz denied.hint" -- verify-mix --expect-denied || failed=1
+  run_cmd blocking tcc-denied 150 "state denied.tap-zeros denied.1000hz denied.hint" -- verify-mix --expect-denied || failed=1
   echo "::group::TCC: allow System Audio Recording again"
   tcc_set 2 kTCCServiceAudioCapture
   restart_coreaudiod

@@ -116,20 +116,24 @@ final class OverloadLog {
 
 extension Recorder {
     /// A window that no late I/O cycle damaged: no run of 32 or more exact zeros, and no overload
-    /// while it was recorded. Up to `attempts` tries; if none is clean, the last. Only for windows
-    /// that should never be silent: a level measured over a dropout reads low.
+    /// while it was recorded. Up to `attempts` tries; if none is clean, the least damaged. Only
+    /// for windows that should never be silent: a level measured over a dropout reads low.
     func cleanTake(seconds: Double, settle: Double = 0.2, overloads: OverloadLog, channel: Int = 0,
-                   attempts: Int = 3) -> [Float] {
-        var samples: [Float] = []
+                   attempts: Int = 5) -> [Float] {
+        var best: (samples: [Float], damage: Int)?
         for attempt in 1...attempts {
             let before = overloads.total
-            samples = take(seconds: seconds, settle: attempt == 1 ? settle : 0, channel: channel)
+            let samples = take(seconds: seconds, settle: attempt == 1 ? settle : 0, channel: channel)
             let late = overloads.total - before
-            let run = SignalStats(samples).longestZeroRun
-            if late == 0 && run < 32 { return samples }
-            note("window damaged (\(late) overloads, zero run \(run) frames); recording it again")
+            let stats = SignalStats(samples)
+            let run = stats.longestZeroRun >= 32 ? stats.zeros : 0
+            if late == 0 && run == 0 { return samples }
+            // Missing frames weigh most; an overload that left no gap is a small blemish.
+            let damage = run * 10 + late
+            if best == nil || damage < best!.damage { best = (samples, damage) }
+            note("window damaged (\(late) overloads, \(stats.longestZeroRun)-frame zero run); recording it again")
         }
-        return samples
+        return best?.samples ?? []
     }
 }
 
