@@ -104,16 +104,16 @@ jobs:
           path: build/release
           if-no-files-found: ignore
 
-  # Exercises the Developer ID code path (temporary keychain, identity lookup,
-  # hardened runtime signing, productbuild --sign) with throwaway self-signed
-  # identities named like Apple's. They cannot be notarized, and Apple's
-  # timestamp and installer-signing checks may reject them, so this is an
-  # experiment that cannot fail the run. Read its log to see how far it got.
-  signing-probe:
-    name: signing path probe (macOS, self-signed, informational)
+  # Exercises the Developer ID code path of scripts/sign.sh (temporary keychain,
+  # p12 import, identity lookup, hardened runtime and secure timestamp, strict
+  # verification) with throwaway self-signed identities named like Apple's.
+  # They cannot be notarized and productbuild refuses the fake installer
+  # identity, so signing the pkg and notarizing are only covered by the
+  # signing-check job below, with real certificates.
+  signing-path:
+    name: signing path (macOS, self-signed)
     runs-on: macos-15
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -123,12 +123,7 @@ jobs:
       - name: Make self-signed identities
         run: bash packaging/tests/make-test-identities.sh "$RUNNER_TEMP/identities"
 
-      # productbuild only signs with an identity the system trusts. The runner is
-      # thrown away afterwards, so trusting a test certificate there is harmless.
-      - name: Trust the test installer certificate
-        run: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$RUNNER_TEMP/identities/installer.pem"
-
-      - name: Import, sign, build the pkg
+      - name: Import and sign
         env:
           APPLE_TEAM_ID: TEST123456
         run: |
@@ -138,7 +133,17 @@ jobs:
           export MACOS_CERT_APP_P12_BASE64 MACOS_CERT_INSTALLER_P12_BASE64 MACOS_CERT_PASSWORD
           bash scripts/sign.sh import-certs
           bash scripts/sign.sh bundles
-          bash scripts/build-pkg.sh
+
+      - name: Identities are found the way build-pkg.sh needs them
+        env:
+          APPLE_TEAM_ID: TEST123456
+        run: |
+          app="$(bash scripts/sign.sh identity app)"
+          installer="$(bash scripts/sign.sh identity installer)"
+          echo "app identity (hash): $app"
+          echo "installer identity (name): $installer"
+          [[ "$app" =~ ^[0-9A-F]{40}$ ]]
+          [ "$installer" = "Developer ID Installer: Duette CI Probe (TEST123456)" ]
 
       - name: Delete the temporary keychain
         if: ${{ always() }}
