@@ -282,27 +282,49 @@ func runDcli(_ ctx: Context) throws {
     r.check("\(mode).clears", cleared, describeClients(clients()), detail: "after this process stops reading")
 }
 
-/// Two processes reading "Duette" directly at the same time: 'dcli' must list both, the second
-/// as well as the first, and drop each when it stops.
+/// The readers DuetteKit finds: 'dcli' plus the HAL's process objects (CoreAudioSystem).
+func readers() -> [pid_t] { HAL.inputReaderPIDs() ?? [] }
+
+/// Two processes reading "Duette" at the same time. The HAL starts and stops the plug-in's IO once
+/// for all of a device's readers, so 'dcli' only knows the first; DuetteKit adds the HAL's process
+/// objects and must see both, whichever starts first, and drop each when it stops. 'dcli' itself
+/// must be empty once nobody reads.
 func runConcurrentReaders(_ r: Reporter, me: pid_t) throws {
+    // 1. Another process reads first, this one joins.
     let other = try ReaderProcess(mode: "direct")
     defer { other.stop() }
     let first = waitUntil(10, interval: 0.05) { clients().contains(other.pid) }
-    r.check("concurrent.first-listed", first, describeClients(clients()), detail: "the other reader is \(other.pid)")
+    r.check("concurrent.first-listed", first, describeClients(clients()), detail: "'dcli'; the other reader is \(other.pid)")
 
     let mine = try DuetteReader(mode: "direct")
     let flowing = waitUntil(5) { mine.frames >= 4800 }
     r.check("concurrent.second-runs", flowing, "\(mine.frames) frames", detail: "this process's IOProc on Duette gets audio")
-    let second = waitUntil(5, interval: 0.05) { clients().contains(me) && clients().contains(other.pid) }
-    r.check("concurrent.second-listed", second, describeClients(clients()),
-            detail: "this process is \(me), started second; HAL: \(halView(of: me)) / \(halView(of: other.pid))")
+    let seen = waitUntil(5, interval: 0.05) { readers().contains(me) && readers().contains(other.pid) }
+    r.check("concurrent.second-listed", seen, describeClients(readers()),
+            detail: "readers DuetteKit finds; this process is \(me), started second. HAL: \(halView(of: me)) / \(halView(of: other.pid))")
+    r.info("concurrent.second-in-dcli", describeClients(clients()),
+           detail: "'dcli' alone; the plug-in gets one StartIO for all readers of the device")
 
     mine.stop()
-    let dropped = waitUntil(5, interval: 0.05) { !clients().contains(me) && clients().contains(other.pid) }
-    r.check("concurrent.second-clears", dropped, describeClients(clients()), detail: "this process stopped; the other still reads")
+    let dropped = waitUntil(5, interval: 0.05) { !readers().contains(me) && readers().contains(other.pid) }
+    r.check("concurrent.second-clears", dropped, describeClients(readers()), detail: "this process stopped; the other still reads")
     other.stop()
-    let cleared = waitUntil(5, interval: 0.05) { !clients().contains(other.pid) }
-    r.check("concurrent.clears", cleared, describeClients(clients()))
+    let cleared = waitUntil(5, interval: 0.05) { clients().isEmpty && readers().isEmpty }
+    r.check("concurrent.clears", cleared, "'dcli' \(describeClients(clients())), readers \(describeClients(readers()))")
+
+    // 2. This process reads first; a call app joins through its own aggregate (Discord's way).
+    let own = try DuetteReader(mode: "direct")
+    defer { own.stop() }
+    _ = waitUntil(5, interval: 0.05) { clients().contains(me) }
+    let app = try ReaderProcess(mode: "aggregate", playHz: 440)
+    defer { app.stop() }
+    let joined = waitUntil(10, interval: 0.1) { readers().contains(app.pid) }
+    r.info("concurrent.aggregate-second", "\(joined ? "found" : "not found"): \(describeClients(readers()))",
+           detail: "a reader that joins through its own private aggregate; HAL: \(halView(of: app.pid))")
+    app.stop()
+    own.stop()
+    let empty = waitUntil(5, interval: 0.05) { clients().isEmpty }
+    r.check("concurrent.dcli-empty-after", empty, describeClients(clients()), detail: "'dcli' once nobody reads")
 }
 
 // MARK: - feedback-loop
@@ -317,21 +339,21 @@ func runFeedbackLoop(_ ctx: Context) throws {
     }
     try? HAL.setDriverSelfTestTone(false)
 
-    // Duette itself reads "Duette" too (the app's "Measure latency", for example). It is listed in
-    // 'dcli' and must never count as a loop.
-    let own = try Recorder(device: try Device.require(uid: DuetteDriver.deviceUID), seconds: 2)
-    try own.start()
-    defer { own.stop() }
-    let ownListed = waitUntil(5, interval: 0.05) { clients().contains(me) }
-    r.check("dcli.lists-own-process", ownListed, describeClients(clients()), detail: "this process is \(me)")
-
     // The "call app": another process that plays 440 Hz and records "Duette" through its own
     // aggregate, as Discord does when Duette is its microphone.
     let child = try ReaderProcess(mode: "aggregate", playHz: 440)
     defer { child.stop() }
     let app = child.pid
-    let listed = waitUntil(15, interval: 0.1) { clients().contains(app) && clients().contains(me) }
-    r.check("dcli.lists-app", listed, describeClients(clients()), detail: "the reader process is \(app); this process \(me) still reads")
+    let listed = waitUntil(15, interval: 0.1) { clients().contains(app) }
+    r.check("dcli.lists-app", listed, describeClients(clients()), detail: "'dcli'; the reader process is \(app)")
+
+    // Duette itself reads "Duette" too (the app's "Measure latency", for example). It is found as a
+    // reader and must never count as a loop.
+    let own = try Recorder(device: try Device.require(uid: DuetteDriver.deviceUID), seconds: 2)
+    try own.start()
+    defer { own.stop() }
+    let ownListed = waitUntil(5, interval: 0.05) { readers().contains(me) && readers().contains(app) }
+    r.check("dcli.lists-own-process", ownListed, describeClients(readers()), detail: "readers DuetteKit finds; this process is \(me)")
 
     let system = PIDAudioSystem()
     let bundleID = PIDAudioSystem.bundleID(pid: app)
@@ -346,7 +368,7 @@ func runFeedbackLoop(_ ctx: Context) throws {
             detail: "ProcessCatalog for the tapped app; never this process (\(me))")
     let inputClients = system.inputClientPIDs() ?? []
     let looping = FeedbackLoopDetector.loopingPIDs(inputClients: inputClients, appPIDs: appPIDs, ownPID: me)
-    r.check("detector.fires", looping == [app], "\(looping)", detail: "FeedbackLoopDetector with the live 'dcli' \(inputClients)")
+    r.check("detector.fires", looping == [app], "\(looping)", detail: "FeedbackLoopDetector with the live readers \(inputClients)")
     // Even when this process is wrongly counted as part of the app, it is not a loop.
     let withOwn = FeedbackLoopDetector.loopingPIDs(inputClients: inputClients, appPIDs: appPIDs.union([me]), ownPID: me)
     r.check("detector.ignores-own-process", inputClients.contains(me) && withOwn == [app], "\(withOwn)",
@@ -369,8 +391,9 @@ func runFeedbackLoop(_ ctx: Context) throws {
     }
 
     child.stop()
-    let gone = waitUntil(10, interval: 0.1) { !clients().contains(app) }
-    r.check("dcli.clears-when-app-quits", gone, describeClients(clients()))
-    let after = FeedbackLoopDetector.loopingPIDs(inputClients: clients(), appPIDs: appPIDs, ownPID: me)
+    own.stop()
+    let gone = waitUntil(10, interval: 0.1) { clients().isEmpty && !readers().contains(app) }
+    r.check("dcli.clears-when-app-quits", gone, "'dcli' \(describeClients(clients())), readers \(describeClients(readers()))")
+    let after = FeedbackLoopDetector.loopingPIDs(inputClients: readers(), appPIDs: appPIDs, ownPID: me)
     r.check("detector.quiet-after", after.isEmpty, "\(after)")
 }

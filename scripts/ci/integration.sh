@@ -233,7 +233,7 @@ phase_blocking() {
   # 'dcli' and the feedback-loop warning: readers that read directly, two at once, through an
   # aggregate or through VPIO.
   run_cmd blocking dcli-direct 60 "direct.lists-pid direct.clears" -- dcli --mode direct || failed=1
-  run_cmd blocking dcli-concurrent 60 "concurrent.first-listed concurrent.second-listed concurrent.second-clears" -- dcli --mode concurrent || failed=1
+  run_cmd blocking dcli-concurrent 90 "concurrent.first-listed concurrent.second-listed concurrent.second-in-dcli concurrent.aggregate-second concurrent.dcli-empty-after" -- dcli --mode concurrent || failed=1
   run_cmd blocking dcli-aggregate 60 "aggregate.lists-pid aggregate.clears" -- dcli --mode aggregate || failed=1
   run_cmd blocking dcli-vpio 60 "vpio.lists-pid vpio.clears" -- dcli --mode vpio || failed=1
   run_cmd blocking feedback-loop 120 "dcli.lists-own-process dcli.lists-app detector.fires detector.ignores-own-process controller.warns controller.clears" \
