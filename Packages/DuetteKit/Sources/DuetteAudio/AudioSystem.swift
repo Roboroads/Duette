@@ -89,6 +89,12 @@ public protocol AudioSystem: AnyObject {
     /// Replaces the set of watched objects: `devices` report .deviceChanged, `aggregate` reports
     /// .overload. An empty set stops watching.
     func watch(devices: [AudioObjectID], aggregate: AudioObjectID?)
+
+    // Measuring
+    /// Plays a test chirp into the sink and records "Duette", both at `bufferFrameSize`
+    /// (LoopbackProbe). Nothing else may write to the sink meanwhile. Blocks for about a second.
+    func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
+                         sampleRate: Double) throws -> LoopbackMeasurement
 }
 
 extension AudioSystem {
@@ -97,6 +103,12 @@ extension AudioSystem {
 
     /// Unknown by default, which skips grouping by responsible process.
     public func responsiblePID(of pid: pid_t) -> pid_t? { nil }
+
+    /// Not possible by default.
+    public func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
+                                sampleRate: Double) throws -> LoopbackMeasurement {
+        throw LatencyMeasurementError.unsupported
+    }
 }
 
 /// The real AudioSystem on top of the HAL.
@@ -286,5 +298,10 @@ public final class CoreAudioSystem: AudioSystem {
             listeners.append(listener)
         }
         watchListeners = listeners
+    }
+
+    public func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
+                                sampleRate: Double) throws -> LoopbackMeasurement {
+        try LoopbackProbe.measure(sink: sink, duette: duette, bufferFrameSize: bufferFrameSize, sampleRate: sampleRate)
     }
 }

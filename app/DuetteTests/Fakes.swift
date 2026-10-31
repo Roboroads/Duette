@@ -72,6 +72,16 @@ final class FakeAudioSystem: AudioSystem {
     var parents: [pid_t: pid_t] = [:]
     var inputClients: [pid_t]? = []
     var rates: [AudioObjectID: Double] = [:]
+    /// What a test sound through the loopback gives.
+    var loopback: Result<LoopbackMeasurement, Error> = .failure(LatencyMeasurementError.unsupported)
+
+    struct LoopbackCall: Equatable {
+        var sink: AudioObjectID
+        var duette: AudioObjectID
+        var bufferFrameSize: UInt32
+        /// IOProcs running while the test sound played.
+        var ioRunning: Int
+    }
 
     // What happened.
     private(set) var createdAggregates: [[String: Any]] = []
@@ -82,6 +92,9 @@ final class FakeAudioSystem: AudioSystem {
     private(set) var bufferSizes: [UInt32] = []
     private(set) var startedIO: [AudioObjectID] = []
     private(set) var stoppedIO: [AudioObjectID] = []
+    private(set) var loopbackCalls: [LoopbackCall] = []
+    /// Called while the test sound plays.
+    var onMeasure: (() -> Void)?
     private var nextID: AudioObjectID = 1000
 
     func emit(_ event: AudioSystemEvent) {
@@ -203,6 +216,13 @@ final class FakeAudioSystem: AudioSystem {
     }
 
     func watch(devices: [AudioObjectID], aggregate: AudioObjectID?) {}
+
+    func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
+                         sampleRate: Double) throws -> LoopbackMeasurement {
+        loopbackCalls.append(LoopbackCall(sink: sink, duette: duette, bufferFrameSize: bufferFrameSize, ioRunning: ioRunning))
+        onMeasure?()
+        return try loopback.get()
+    }
 }
 
 /// Microphone permission that the test controls.

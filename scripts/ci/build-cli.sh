@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and test duettectl (tools/duettectl). macOS only.
 #
-# Steps: `swift test` (argument parsing, WAV files, the FFT tone checker, loopback analysis),
+# Steps: `swift test` (argument parsing, WAV files, the FFT tone checker, the soak plan),
 # then a release build, then a smoke run of the binary that needs no audio device.
 #
 # Product:

@@ -395,7 +395,7 @@ struct LaunchAtLoginRow: View {
             .accessibilityLabel("Open Duette when I log in")
 
             if state == .needsApproval {
-                Text("Your Mac needs your OK first. Switch Duette on in Login Items.")
+                Text("Your Mac needs your OK first. Switch Duette on in Login Items & Extensions.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -435,12 +435,58 @@ struct ExpertsView: View {
                 .accessibilityElement(children: .combine)
             }
 
+            LatencyCheckView(model: model)
+
             Toggle("Play test tone (driver)", isOn: Binding(get: { model.driverToneOn },
                                                            set: { model.setDriverTone($0) }))
                 .controlSize(.large)
             Toggle("Play test tone (engine)", isOn: Binding(get: { model.engineToneOn },
                                                            set: { model.setEngineTone($0) }))
                 .controlSize(.large)
+        }
+    }
+}
+
+/// "Measure latency": a button, then one plain sentence with what Duette adds.
+struct LatencyCheckView: View {
+    @ObservedObject var model: AppModel
+
+    private var measuring: Bool { model.latencyCheck == .measuring }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                model.measureLatency()
+            } label: {
+                HStack(spacing: 8) {
+                    if measuring {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityHidden(true)
+                    }
+                    Text(measuring ? "Measuring…" : "Measure latency")
+                }
+                .frame(maxWidth: .infinity, minHeight: 30)
+            }
+            .controlSize(.large)
+            .disabled(measuring)
+            .accessibilityHint(AppModel.latencyNote)
+
+            if let result = model.latencyResult {
+                Text(result)
+                    .font(.subheadline.bold())
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach([model.latencyTotal, model.latencyDetail].compactMap { $0 }, id: \.self) { line in
+                Text(line)
+                    .font(.subheadline)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Before, during and after: what anyone listening to Duette hears.
+            Text(AppModel.latencyNote)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

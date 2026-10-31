@@ -14,6 +14,15 @@ enum ExportState: Equatable {
     case failed(String)
 }
 
+/// How "Measure latency" is doing.
+enum LatencyCheck: Equatable {
+    case idle
+    case measuring
+    case done(LatencyMeasurement)
+    /// The text says what went wrong, in plain words.
+    case failed(String)
+}
+
 /// The numbers under "For experts".
 struct ExpertSnapshot: Equatable {
     var latencyText: String
@@ -39,6 +48,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var message: String?
     @Published private(set) var driverToneOn = false
     @Published private(set) var engineToneOn = false
+    @Published private(set) var latencyCheck: LatencyCheck = .idle
 
     // What the user chose; saved by Settings.
     @Published private(set) var appBundleID: String?
@@ -170,6 +180,10 @@ final class AppModel: ObservableObject {
                                        setupDone: onboardingDone)
             log.info("Engine state changed: \(String(describing: new.state), privacy: .public); the menu says: \(line.message, privacy: .public)")
         }
+        var failed = false
+        if case .error = new.state { failed = true }
+        // A result describes the engine that was measured; a rebuilt or failed one is another.
+        if new.rebuildCount != status.rebuildCount || failed { clearLatencyResult() }
         status = new
     }
 
@@ -179,6 +193,7 @@ final class AppModel: ObservableObject {
         guard bundleID != appBundleID else { return }
         appBundleID = bundleID
         settings.appBundleID = bundleID
+        clearLatencyResult()
         pushConfiguration()
     }
 
@@ -186,6 +201,7 @@ final class AppModel: ObservableObject {
         guard selection != mic else { return }
         mic = selection
         settings.mic = selection
+        clearLatencyResult()
         pushConfiguration()
     }
 
@@ -193,6 +209,7 @@ final class AppModel: ObservableObject {
         guard EngineConfiguration.bufferFrameSizes.contains(size), size != bufferFrameSize else { return }
         bufferFrameSize = size
         settings.bufferFrameSize = size
+        clearLatencyResult()
         pushConfiguration()
     }
 
@@ -323,7 +340,7 @@ final class AppModel: ObservableObject {
             message = nil
         } catch {
             log.error("Launch at login could not be changed: \(error.localizedDescription, privacy: .public)")
-            message = "Duette couldn't change this. You can also do it in System Settings > General > Login Items."
+            message = "Duette couldn't change this. You can also do it in System Settings > General > Login Items & Extensions."
         }
         refreshLoginItem()
     }
@@ -364,13 +381,114 @@ final class AppModel: ObservableObject {
     func expertSnapshot() -> ExpertSnapshot {
         var latency = "not running"
         if let aggregate = status.aggregateID {
-            let duette = services.audioSystem.deviceID(forUID: DuetteDriver.deviceUID).map(services.deviceTiming)
-            let estimate = LatencyModel.estimate(aggregate: services.deviceTiming(aggregate), duette: duette,
+            let audio = services.audioSystem
+            let duette = audio.deviceID(forUID: DuetteDriver.deviceUID).map(services.deviceTiming)
+            let mic = status.micUID.flatMap { audio.deviceID(forUID: $0) }.map(services.deviceTiming)
+            let estimate = LatencyModel.estimate(aggregate: services.deviceTiming(aggregate), duette: duette, mic: mic,
                                                  sampleRate: status.sampleRate ?? 48000)
-            latency = "about \(Int(estimate.milliseconds.rounded())) ms"
+            let added = Double(estimate.loopbackFrames) * 1000 / (status.sampleRate ?? 48000)
+            latency = "about \(max(1, Int(added.rounded()))) ms (your microphone to other apps: about \(Int(estimate.milliseconds.rounded())) ms)"
         }
         return ExpertSnapshot(latencyText: latency, overloads: controller.engine.stats().overloads)
     }
+
+    // MARK: Measure latency
+
+    /// "Measure latency": the engine pauses for about a second while a test sound goes through
+    /// Duette, and the answer is said in plain words. Apps listening to Duette hear the sound.
+    func measureLatency() {
+        guard latencyCheck != .measuring else { return }
+        latencyCheck = .measuring
+        // The driver's beep would be recorded in place of the test sound: off while measuring.
+        let toneWasOn = services.driverToneState() == true
+        if toneWasOn { try? services.setDriverTone(false) }
+        controller.measureLatency(timing: services.deviceTiming) { [weak self] result in
+            guard let self else { return }
+            self.services.runOnMain {
+                if toneWasOn { self.restoreDriverTone() }
+                self.finishLatency(result)
+            }
+        }
+    }
+
+    private func restoreDriverTone() {
+        do {
+            try services.setDriverTone(true)
+        } catch {
+            log.error("The driver's test tone could not be switched back on: \(error.localizedDescription, privacy: .public)")
+        }
+        refreshDriverTone()
+    }
+
+    /// Forgets the last answer, unless a measurement is running.
+    private func clearLatencyResult() {
+        if latencyCheck != .measuring && latencyCheck != .idle { latencyCheck = .idle }
+    }
+
+    private func finishLatency(_ result: Result<LatencyMeasurement, LatencyMeasurementError>) {
+        switch result {
+        case .success(let measurement):
+            latencyCheck = .done(measurement)
+            let rate = measurement.sampleRate > 0 ? measurement.sampleRate : 48000
+            let summary = String(format: "Duette adds %.2f ms (%.2f ms estimated); microphone to other apps %.2f ms",
+                                 measurement.addedMilliseconds, Double(measurement.estimate.loopbackFrames) * 1000 / rate,
+                                 measurement.totalMilliseconds)
+            selfTests["latency"] = summary
+            log.info("Latency measured: \(summary, privacy: .public)")
+        case .failure(let error):
+            latencyCheck = .failed(Self.plainWords(error))
+            selfTests["latency"] = "failed: \(error)"
+            log.error("The latency could not be measured: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    static func plainWords(_ error: LatencyMeasurementError) -> String {
+        switch error {
+        case .notRunning:
+            return "Duette isn't running yet, so there is nothing to measure."
+        case .driverMissing:
+            return "Duette's driver isn't installed. Run the Duette installer and try again."
+        case .notHeard:
+            return "Duette couldn't hear its test sound. Check that Duette may use the microphone, then try again."
+        case .restarting:
+            return "Duette is restarting. Try again in a moment."
+        case .unsupported, .failed:
+            return "The measurement didn't work. Please try again."
+        }
+    }
+
+    /// One plain sentence: what Duette adds, or why there is no answer.
+    var latencyResult: String? {
+        switch latencyCheck {
+        case .idle, .measuring:
+            return nil
+        case .done(let measurement):
+            // Duette's own part: from the engine to an app reading "Duette".
+            return "Duette adds about \(max(1, Int(measurement.addedMilliseconds.rounded()))) ms of delay."
+        case .failed(let text):
+            return text
+        }
+    }
+
+    /// Under the result: from the mic to other apps, Duette's part included.
+    var latencyTotal: String? {
+        guard case .done(let measurement) = latencyCheck else { return nil }
+        return "Your microphone to other apps: about \(max(1, Int(measurement.totalMilliseconds.rounded()))) ms."
+    }
+
+    /// What anyone listening to Duette hears while it measures.
+    static let latencyNote = "While it measures, apps listening to Duette hear a short silence and a soft chirp or two."
+
+    /// The measured loopback next to what was expected.
+    var latencyDetail: String? {
+        guard case .done(let measurement) = latencyCheck else { return nil }
+        let rate = measurement.sampleRate > 0 ? measurement.sampleRate : 48000
+        return String(format: "Measured with a test sound: %.1f ms (expected %.1f ms).",
+                      measurement.addedMilliseconds, Double(measurement.estimate.loopbackFrames) * 1000 / rate)
+    }
+
+    /// What the self-tests found, for diagnostics.
+    var selfTestResults: [String: String] { selfTests }
 
     // MARK: Diagnostics
 

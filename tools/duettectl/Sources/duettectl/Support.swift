@@ -1,7 +1,6 @@
 import CoreAudio
 import DuetteAudio
 import DuettectlCore
-import DuettectlIO
 import Foundation
 
 struct ToolError: Error, CustomStringConvertible {
@@ -248,88 +247,13 @@ final class DefaultDevices {
     }
 }
 
-func ioBlock(_ raw: duettectl_block) -> IOBlock {
-    IOBlock(sampleTime: raw.sample_time, nowSampleTime: raw.now_sample_time, nowHostTime: raw.now_host_time,
-            frames: Int(raw.frames), position: raw.position)
-}
-
 // MARK: - Recorder and player
 
-/// Records two input channels of a device (see duettectl_io.h).
-final class Recorder {
-    let device: AudioObjectID
-    let sampleRate: Double
-    private let handle: OpaquePointer
-    private let blockCapacity: Int
-    private var procID: AudioDeviceIOProcID?
+/// The probe IOProcs from DuetteKit (duette_probe.h), which "Measure latency" runs too.
+typealias Recorder = ProbeRecorder
+typealias Player = ProbePlayer
 
-    /// Keeps the latest `seconds` of audio.
-    init(device: AudioObjectID, seconds: Double, sampleRate: Double = Device.sampleRate, firstChannel: UInt32 = 0) throws {
-        let frames = max(4096, Int(seconds * sampleRate))
-        let blocks = max(1024, frames / 16)
-        guard let handle = duettectl_recorder_create(frames, blocks, firstChannel) else {
-            throw ToolError("could not allocate a recorder for \(seconds) s")
-        }
-        self.device = device
-        self.sampleRate = sampleRate
-        self.handle = handle
-        self.blockCapacity = blocks
-    }
-
-    deinit {
-        stop()
-        duettectl_recorder_destroy(handle)
-    }
-
-    func start() throws {
-        var proc: AudioDeviceIOProcID?
-        let status = duettectl_recorder_start(handle, device, &proc)
-        guard status == 0, let proc else { throw CoreAudioError(status, "start recording from \(Device.name(device))") }
-        procID = proc
-    }
-
-    func stop() {
-        guard let procID else { return }
-        _ = duettectl_io_stop(device, procID)
-        self.procID = nil
-    }
-
-    var isRunning: Bool { procID != nil }
-    var frames: UInt64 { duettectl_recorder_frames(handle) }
-    var cycles: UInt64 { duettectl_recorder_cycles(handle) }
-    var inputChannels: UInt32 { duettectl_recorder_input_channels(handle) }
-    var capacity: Int { duettectl_recorder_capacity(handle) }
-
-    @discardableResult
-    func waitForFrames(_ count: UInt64, timeout: Double) -> Bool {
-        waitUntil(timeout) { frames >= count }
-    }
-
-    /// Interleaved stereo frames from recording index `first`.
-    func copy(from first: UInt64, count: Int) -> [Float] {
-        guard count > 0 else { return [] }
-        var out = [Float](repeating: 0, count: count * 2)
-        let copied = out.withUnsafeMutableBufferPointer { buffer -> Int in
-            guard let base = buffer.baseAddress else { return 0 }
-            return duettectl_recorder_copy(handle, first, base, count)
-        }
-        return Array(out.prefix(copied * 2))
-    }
-
-    /// One channel (0 left, 1 right) from recording index `first`.
-    func channel(_ index: Int, from first: UInt64, count: Int) -> [Float] {
-        let stereo = copy(from: first, count: count)
-        return stride(from: index, to: stereo.count, by: 2).map { stereo[$0] }
-    }
-
-    /// The latest `seconds` of one channel, or fewer if not recorded yet.
-    func latest(seconds: Double, channel index: Int = 0) -> [Float] {
-        let total = frames
-        let want = UInt64(min(Double(capacity - 1024), seconds * sampleRate))
-        let first = total > want ? total - want : 0
-        return channel(index, from: first, count: Int(total - first))
-    }
-
+extension ProbeRecorder {
     /// Records `seconds` more and returns them (one channel), skipping `settle` seconds first.
     func take(seconds: Double, settle: Double = 0.1, channel index: Int = 0) -> [Float] {
         idle(settle)
@@ -337,77 +261,6 @@ final class Recorder {
         let want = UInt64(seconds * sampleRate)
         waitForFrames(first + want, timeout: seconds + 3)
         return channel(index, from: first, count: Int(want))
-    }
-
-    func blocks() -> [IOBlock] {
-        let count = cycles
-        let start = count > UInt64(blockCapacity) ? count - UInt64(blockCapacity) : 0
-        var result: [IOBlock] = []
-        var raw = duettectl_block()
-        var index = start
-        while index < count {
-            if duettectl_recorder_block(handle, index, &raw) { result.append(ioBlock(raw)) }
-            index += 1
-        }
-        return result
-    }
-}
-
-/// Plays into a device: silence, then (once armed) `signal`, then a tone (see duettectl_io.h).
-final class Player {
-    let device: AudioObjectID
-    private let handle: OpaquePointer
-    private static let blockCapacity = 16384
-    private var procID: AudioDeviceIOProcID?
-
-    init(device: AudioObjectID, signal: [Float], tailHz: Double = 0, tailAmplitude: Float = 0,
-         sampleRate: Double = Device.sampleRate) throws {
-        let capacity = Self.blockCapacity
-        let created = signal.withUnsafeBufferPointer { buffer in
-            duettectl_player_create(buffer.baseAddress, buffer.count, capacity)
-        }
-        guard let handle = created else { throw ToolError("could not allocate a player") }
-        duettectl_player_set_tail(handle, tailHz, tailAmplitude, sampleRate)
-        self.device = device
-        self.handle = handle
-    }
-
-    deinit {
-        stop()
-        duettectl_player_destroy(handle)
-    }
-
-    func start() throws {
-        var proc: AudioDeviceIOProcID?
-        let status = duettectl_player_start(handle, device, &proc)
-        guard status == 0, let proc else { throw CoreAudioError(status, "start playing into \(Device.name(device))") }
-        procID = proc
-    }
-
-    func arm() {
-        duettectl_player_arm(handle)
-    }
-
-    func stop() {
-        guard let procID else { return }
-        _ = duettectl_io_stop(device, procID)
-        self.procID = nil
-    }
-
-    var cycles: UInt64 { duettectl_player_cycles(handle) }
-
-    func blocks() -> [IOBlock] {
-        let count = cycles
-        let capacity = UInt64(Self.blockCapacity)
-        let start = count > capacity ? count - capacity : 0
-        var result: [IOBlock] = []
-        var raw = duettectl_block()
-        var index = start
-        while index < count {
-            if duettectl_player_block(handle, index, &raw) { result.append(ioBlock(raw)) }
-            index += 1
-        }
-        return result
     }
 }
 

@@ -113,4 +113,15 @@ final class PIDAudioSystem: AudioSystem {
     func watch(devices: [AudioObjectID], aggregate: AudioObjectID?) {
         base.watch(devices: devices, aggregate: aggregate)
     }
+
+    func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
+                         sampleRate: Double) throws -> LoopbackMeasurement {
+        Stage.set("chirp through the sink into Duette at \(bufferFrameSize) frames (LoopbackProbe)")
+        let measurement = try base.measureLoopback(sink: sink, duette: duette, bufferFrameSize: bufferFrameSize,
+                                                   sampleRate: sampleRate)
+        note(String(format: "loopback: %.1f frames mean, %.0f worst, offset %+.0f, confidence %.3f, %ld take(s)",
+                    measurement.meanFrames, measurement.worstFrames, measurement.sampleOffset, measurement.confidence,
+                    measurement.takes))
+        return measurement
+    }
 }

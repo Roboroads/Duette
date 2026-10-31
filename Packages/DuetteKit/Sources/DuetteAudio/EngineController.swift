@@ -139,6 +139,7 @@ public final class EngineController {
 
     private let statusLock = NSLock()
     private var currentStatus = EngineStatus()
+    private var latestMeasurement: LatencyMeasurement?
 
     // Control-context state.
     private var configuration = EngineConfiguration()
@@ -219,6 +220,7 @@ public final class EngineController {
         scheduler.async { [weak self] in
             guard let self, configuration != self.configuration else { return }
             self.configuration = configuration
+            self.forgetMeasurement()
             self.updateStatus { $0.configuration = configuration }
             if self.started { self.requestRebuild() }
         }
@@ -246,6 +248,83 @@ public final class EngineController {
                 $0.clearEngineFacts()
             }
         }
+    }
+
+    // MARK: - Measuring the latency
+
+    /// The latest successful "Measure latency", for diagnostics. Any thread.
+    public var latestLatencyMeasurement: LatencyMeasurement? {
+        statusLock.lock()
+        defer { statusLock.unlock() }
+        return latestMeasurement
+    }
+
+    /// "Measure latency": pauses the engine, sends a chirp through the sink into "Duette" at the
+    /// engine's buffer size, and starts the engine again on the same aggregate. Readers of
+    /// "Duette" hear the chirp in about a second of otherwise silence. `timing` reads the HAL's
+    /// figures for the estimate. `completion` runs on the control context.
+    public func measureLatency(timing: @escaping (AudioObjectID) -> DeviceTiming = DeviceTiming.read,
+                               now: @escaping () -> Date = { Date() },
+                               completion: @escaping (Result<LatencyMeasurement, LatencyMeasurementError>) -> Void) {
+        scheduler.async { [weak self] in
+            guard let self else { return }
+            completion(self.measureNow(timing: timing, now: now))
+        }
+    }
+
+    private func measureNow(timing: (AudioObjectID) -> DeviceTiming,
+                            now: () -> Date) -> Result<LatencyMeasurement, LatencyMeasurementError> {
+        guard started, !asleep, let session, let token = session.token else { return .failure(.notRunning) }
+        // A change is waiting out its debounce: the engine measured now is about to go.
+        guard pendingRebuild == nil else { return .failure(.restarting) }
+        guard let duette = audioSystem.deviceID(forUID: DuetteDriver.deviceUID) else { return .failure(.driverMissing) }
+        let aggregateTiming = timing(session.aggregate)
+        // The buffer the aggregate runs at, which the HAL may have chosen over the one asked for.
+        let buffer = aggregateTiming.bufferFrameSize ?? configuration.bufferFrameSize
+        let estimate = LatencyModel.estimate(aggregate: aggregateTiming, duette: timing(duette),
+                                             mic: session.mic.map { timing($0.id) }, sampleRate: session.sampleRate)
+
+        // 1. Pause: the probe must be the sink's only writer. The aggregate, the tap and the
+        // layout stay as they are.
+        audioSystem.stopIO(token)
+        self.session?.token = nil
+        let measured = Result { () throws -> LoopbackMeasurement in
+            try audioSystem.measureLoopback(sink: session.sinkID, duette: duette, bufferFrameSize: buffer,
+                                            sampleRate: session.sampleRate)
+        }
+
+        // 2. Resume on the same aggregate. If it will not start, build everything again.
+        var resumed = true
+        do {
+            self.session?.token = try audioSystem.startIO(on: session.aggregate, engine: engine)
+        } catch {
+            resumed = false
+            teardown()
+            fail(error, "start the engine again after measuring the latency")
+        }
+
+        switch measured {
+        case .failure(let error):
+            if let error = error as? LatencyMeasurementError { return .failure(error) }
+            return .failure(.failed(Self.coreAudioError(error, "measure the latency")))
+        case .success(let loopback):
+            let measurement = LatencyMeasurement(date: now(), loopback: loopback, estimate: estimate,
+                                                 sampleRate: session.sampleRate)
+            // Kept for diagnostics only while the engine it describes runs.
+            if resumed {
+                statusLock.lock()
+                latestMeasurement = measurement
+                statusLock.unlock()
+            }
+            return .success(measurement)
+        }
+    }
+
+    /// The latest measurement describes an engine that is going away.
+    private func forgetMeasurement() {
+        statusLock.lock()
+        latestMeasurement = nil
+        statusLock.unlock()
     }
 
     // MARK: - Choices for the UI
@@ -375,6 +454,7 @@ public final class EngineController {
     }
 
     private func teardown() {
+        forgetMeasurement()
         guard let session else { return }
         self.session = nil
         tearDown(session)
@@ -521,6 +601,7 @@ public final class EngineController {
     }
 
     private func fail(_ error: Error, _ operation: String) {
+        forgetMeasurement()
         failures += 1
         let failure = Self.coreAudioError(error, operation)
         let delay = Self.retryDelays[min(failures - 1, Self.retryDelays.count - 1)]

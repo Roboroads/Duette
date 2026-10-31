@@ -5,7 +5,7 @@ import ServiceManagement
 enum LoginItemState: Equatable {
     case off
     case on
-    /// Registered, but the user has to allow it in System Settings > General > Login Items.
+    /// Registered, but the user has to allow it in System Settings > General > Login Items & Extensions.
     case needsApproval
 
     /// The system answers "not found" for the app itself until it has been registered once, so

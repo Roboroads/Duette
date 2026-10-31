@@ -1,7 +1,12 @@
-import DuettectlDSP
+import DuetteEngine
 import Foundation
 
-public struct LatencyEstimate: Equatable {
+// Offline analysis of a chirp sent through the loopback: where it landed in "Duette" and how long
+// it took from the writer's IOProc call to the reader's. Used by "Measure latency" (LoopbackProbe)
+// and by duettectl's checks. Nothing here touches Core Audio, so it is tested with synthetic runs.
+
+/// Where a reference signal sits in a recording.
+public struct LagEstimate: Equatable {
     public var lagFrames: Int
     /// 0..1; above about 0.5 can be trusted.
     public var confidence: Double
@@ -12,7 +17,7 @@ public struct LatencyEstimate: Equatable {
     }
 }
 
-/// The test signal of the loopback check: core's LatencyEstimator::makeChirp.
+/// The test signal: core's LatencyEstimator::makeChirp.
 public enum Chirp {
     public static func make(sampleRate: Double, startHz: Double, endHz: Double, frames: Int,
                             amplitude: Float = 0.5) -> [Float] {
@@ -20,28 +25,28 @@ public enum Chirp {
         var out = [Float](repeating: 0, count: frames)
         out.withUnsafeMutableBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
-            duettectl_make_chirp(base, buffer.count, sampleRate, startHz, endHz, amplitude)
+            duette_probe_make_chirp(base, buffer.count, sampleRate, startHz, endHz, amplitude)
         }
         return out
     }
 }
 
-/// core's LatencyEstimator::estimate.
-public enum Latency {
-    public static func estimate(reference: [Float], recording: [Float], maxLagFrames: Int) -> LatencyEstimate {
+/// core's LatencyEstimator::estimate. Offline: never on an audio thread.
+public enum LagEstimator {
+    public static func estimate(reference: [Float], recording: [Float], maxLagFrames: Int) -> LagEstimate {
         let result = reference.withUnsafeBufferPointer { ref in
-            recording.withUnsafeBufferPointer { rec -> duettectl_latency in
+            recording.withUnsafeBufferPointer { rec -> duette_probe_lag in
                 guard let r = ref.baseAddress, let s = rec.baseAddress else {
-                    return duettectl_latency(lag_frames: 0, confidence: 0)
+                    return duette_probe_lag(lag_frames: 0, confidence: 0)
                 }
-                return duettectl_estimate_latency(r, ref.count, s, rec.count, max(0, maxLagFrames))
+                return duette_probe_estimate_lag(r, ref.count, s, rec.count, max(0, maxLagFrames))
             }
         }
-        return LatencyEstimate(lagFrames: Int(result.lag_frames), confidence: result.confidence)
+        return LagEstimate(lagFrames: Int(result.lag_frames), confidence: result.confidence)
     }
 }
 
-/// One I/O cycle of a recorder or player (see duettectl_io.h).
+/// One I/O cycle of a recorder or player (see duette_probe.h).
 public struct IOBlock: Equatable {
     /// Sample time of the cycle's buffer: input time for a recorder, output time for a player.
     public var sampleTime: Double
@@ -59,9 +64,14 @@ public struct IOBlock: Equatable {
         self.frames = frames
         self.position = position
     }
+
+    init(_ raw: duette_probe_block) {
+        self.init(sampleTime: raw.sample_time, nowSampleTime: raw.now_sample_time, nowHostTime: raw.now_host_time,
+                  frames: Int(raw.frames), position: raw.position)
+    }
 }
 
-/// What the loopback check measured. Times are sample times on the clock "Duette" and
+/// What a chirp through the loopback showed. Times are sample times on the clock "Duette" and
 /// "Duette Sink" share.
 public struct LoopbackResult: Equatable {
     /// Where the writer put the chirp on the sink.
@@ -93,7 +103,8 @@ public struct LoopbackResult: Equatable {
 /// Lines a player's and a recorder's cycle logs up on their shared clock.
 public enum LoopbackAnalysis {
     /// - Parameters:
-    ///   - chirp: what the player played first after it was armed (then a tone until it stopped).
+    ///   - chirp: what the player played first after it was armed (then a tone or silence until
+    ///     it stopped).
     ///   - writer: the player's cycles on the sink.
     ///   - reader: the recorder's cycles on "Duette".
     ///   - recording: one channel of the recording; `recording[i]` is recording index
@@ -130,7 +141,7 @@ public enum LoopbackAnalysis {
         var result = LoopbackResult(chirpSinkTime: chirpSinkTime, confidence: 0, nonZeroAfterStop: 0, observedAfterStop: 0)
         if windowEnd - windowStart >= chirp.count {
             let window = Array(recording[windowStart..<windowEnd])
-            let estimate = Latency.estimate(reference: chirp, recording: window, maxLagFrames: window.count - chirp.count)
+            let estimate = LagEstimator.estimate(reference: chirp, recording: window, maxLagFrames: window.count - chirp.count)
             result.confidence = estimate.confidence
             let foundIndex = recordingStart + Int64(windowStart + estimate.lagFrames)
             if estimate.confidence > 0, let found = duetteTime(ofIndex: foundIndex) {
