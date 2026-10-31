@@ -65,6 +65,9 @@ final class FakeAudioSystem: AudioSystem {
     var processList: [AudioProcessInfo] = []
     var apps: [RunningApp] = []
     var parents: [pid_t: pid_t] = [:]
+    var responsible: [pid_t: pid_t] = [:]
+    /// When set, what the aggregate's stream configuration claims instead of what its streams imply.
+    var bufferChannelOverride: [Int]?
     var inputClients: [pid_t]? = []
     var rates: [AudioObjectID: Double] = [:]
 
@@ -174,6 +177,15 @@ final class FakeAudioSystem: AudioSystem {
     }
 
     func parentPID(of pid: pid_t) -> pid_t? { parents[pid] }
+
+    func responsiblePID(of pid: pid_t) -> pid_t? { responsible[pid] }
+
+    func bufferChannels(of device: AudioObjectID, scope: AudioObjectPropertyScope) -> [Int]? {
+        guard liveAggregates[device] != nil else { return nil }
+        if let bufferChannelOverride { return bufferChannelOverride }
+        let streams = aggregateStreams(device, expectedInputs: 0, expectedOutputs: 0)
+        return StreamLayoutResolver.impliedBufferChannels(scope == kAudioObjectPropertyScopeInput ? streams.input : streams.output)
+    }
 
     func inputClientPIDs() -> [pid_t]? { inputClients }
 

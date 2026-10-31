@@ -61,12 +61,17 @@ public protocol AudioSystem: AnyObject {
     /// aggregate is created, so the real system waits (briefly) for the expected counts.
     func aggregateStreams(_ aggregate: AudioObjectID, expectedInputs: Int,
                           expectedOutputs: Int) -> (input: [StreamInfo], output: [StreamInfo])
+    /// Channels of each buffer an IOProc on the device gets in one scope
+    /// (kAudioDevicePropertyStreamConfiguration), or nil if unknown.
+    func bufferChannels(of device: AudioObjectID, scope: AudioObjectPropertyScope) -> [Int]?
 
     // Processes
     func processes() -> [AudioProcessInfo]
     func runningApps() -> [RunningApp]
     func runningApplicationPIDs(bundleID: String) -> [pid_t]
     func parentPID(of pid: pid_t) -> pid_t?
+    /// The process macOS holds responsible for `pid`, or nil if unknown.
+    func responsiblePID(of pid: pid_t) -> pid_t?
 
     // Driver
     /// The processes recording "Duette" ('dcli'), or nil if the driver does not say.
@@ -84,6 +89,14 @@ public protocol AudioSystem: AnyObject {
     /// Replaces the set of watched objects: `devices` report .deviceChanged, `aggregate` reports
     /// .overload. An empty set stops watching.
     func watch(devices: [AudioObjectID], aggregate: AudioObjectID?)
+}
+
+extension AudioSystem {
+    /// Unknown by default, which skips the buffer cross-check.
+    public func bufferChannels(of device: AudioObjectID, scope: AudioObjectPropertyScope) -> [Int]? { nil }
+
+    /// Unknown by default, which skips grouping by responsible process.
+    public func responsiblePID(of pid: pid_t) -> pid_t? { nil }
 }
 
 /// The real AudioSystem on top of the HAL.
@@ -125,14 +138,16 @@ public final class CoreAudioSystem: AudioSystem {
     }
 
     private func deliver(_ event: AudioSystemEvent) {
-        if event == .devicesChanged || event == .serviceRestarted { armDriverListener() }
+        // After a restart every object ID is stale, even one that comes back with the same number.
+        if event == .serviceRestarted { armDriverListener(force: true) }
+        if event == .devicesChanged { armDriverListener() }
         eventHandler?(event)
     }
 
     /// Listens to 'dcli' on "Duette", which comes and goes with the driver.
-    private func armDriverListener() {
+    private func armDriverListener(force: Bool = false) {
         let duette = HAL.deviceID(forUID: DuetteDriver.deviceUID)
-        if driverListener?.objectID == duette, duette != nil { return }
+        if !force, driverListener?.objectID == duette, duette != nil { return }
         driverListener = nil
         guard let duette else { return }
         driverListener = try? PropertyListener(objectID: duette, selector: DuetteDriver.inputClientsProperty,
@@ -198,6 +213,14 @@ public final class CoreAudioSystem: AudioSystem {
 
     public func parentPID(of pid: pid_t) -> pid_t? {
         ProcessCatalog.systemParentPID(of: pid)
+    }
+
+    public func responsiblePID(of pid: pid_t) -> pid_t? {
+        ProcessCatalog.systemResponsiblePID(of: pid)
+    }
+
+    public func bufferChannels(of device: AudioObjectID, scope: AudioObjectPropertyScope) -> [Int]? {
+        try? AudioObject(device).bufferChannels(scope: scope)
     }
 
     // MARK: Driver

@@ -28,6 +28,24 @@ final class HALSmokeTests: XCTestCase {
         print("HAL default input: \(String(describing: HAL.defaultInputDeviceID()))")
     }
 
+    func testResponsibleProcessIsInheritedByAChild() throws {
+        guard ProcessCatalog.canLookUpResponsiblePIDs else {
+            throw XCTSkip("responsibility_get_pid_responsible_for_pid is not available here")
+        }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["5"]
+        try child.run()
+        defer { child.terminate() }
+        let childPID = child.processIdentifier
+        let mine = ProcessCatalog.systemResponsiblePID(of: me) ?? me
+        let childs = ProcessCatalog.systemResponsiblePID(of: childPID) ?? childPID
+        print("HAL responsible: this process \(me) -> \(mine), child \(childPID) -> \(childs)")
+        XCTAssertEqual(childs, mine, "a child is the responsibility of whoever is responsible for its parent")
+        XCTAssertNil(ProcessCatalog.systemResponsiblePID(of: 999_999), "no such process")
+    }
+
     func testProcessObjectsDescribeThemselves() throws {
         let me = ProcessInfo.processInfo.processIdentifier
         let processes = try HAL.processObjectIDs().compactMap(HAL.processInfo)
@@ -213,6 +231,8 @@ final class HALSmokeTests: XCTestCase {
         let inputBuffers = (try? AudioObject(aggregate).bufferChannels(scope: kAudioObjectPropertyScopeInput)) ?? []
         let outputBuffers = (try? AudioObject(aggregate).bufferChannels(scope: kAudioObjectPropertyScopeOutput)) ?? []
         print("HAL \(label) buffer channels: input \(inputBuffers) output \(outputBuffers)")
+        XCTAssertNoThrow(try StreamLayoutResolver.verifyBuffers(streams: inputStreams, configuration: inputBuffers))
+        XCTAssertNoThrow(try StreamLayoutResolver.verifyBuffers(streams: outputStreams, configuration: outputBuffers))
 
         let inputLayout = try StreamLayoutResolver.resolve(streams: inputStreams, members: inputMembers)
         let outputLayout = try StreamLayoutResolver.resolve(streams: outputStreams, members: outputMembers)

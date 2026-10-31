@@ -80,6 +80,9 @@ public struct StreamLayout: Equatable, Codable {
 public enum StreamLayoutError: Error, Equatable {
     /// The aggregate has a different number of streams than its members together.
     case streamCountMismatch(expected: Int, actual: Int)
+    /// The buffers the streams imply (channels per buffer) differ from the aggregate's
+    /// kAudioDevicePropertyStreamConfiguration, so buffer indices cannot be trusted.
+    case bufferMismatch(streams: [Int], configuration: [Int])
 }
 
 /// Works out which streams of the aggregate belong to which member. The order of tap streams
@@ -122,6 +125,24 @@ public enum StreamLayoutResolver {
             return StreamLayout(ranges: ranges(streams, present, owners(for: order, present)), method: .channelCounts)
         }
         return StreamLayout(ranges: ranges(streams, present, owners(for: composition, present)), method: .memberOrder)
+    }
+
+    /// The IOProc buffers `streams` imply, as channels per buffer: an interleaved stream is one
+    /// buffer with all its channels, a non-interleaved one is one buffer per channel.
+    public static func impliedBufferChannels(_ streams: [StreamInfo]) -> [Int] {
+        streams.flatMap { stream -> [Int] in
+            let buffers = max(stream.buffers, 1)
+            return Array(repeating: buffers == 1 ? stream.channels : stream.channels / buffers, count: buffers)
+        }
+    }
+
+    /// Checks the streams against the aggregate's stream configuration (channels per buffer, as
+    /// AudioObject.bufferChannels(scope:) reads it).
+    public static func verifyBuffers(streams: [StreamInfo], configuration: [Int]) throws {
+        let implied = impliedBufferChannels(streams)
+        guard implied == configuration else {
+            throw StreamLayoutError.bufferMismatch(streams: implied, configuration: configuration)
+        }
     }
 
     /// Member index for each aggregate stream, if `match` places every stream and every member's

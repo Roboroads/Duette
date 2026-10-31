@@ -83,6 +83,24 @@ public struct EngineStatus: Equatable, Codable {
     public var sampleRate: Double?
 
     public init() {}
+
+    /// Forgets everything about the engine that ran: what it mixed, its aggregate and layout, and
+    /// the hints about it. Keeps the state, the configuration, the last error and the counters.
+    mutating func clearEngineFacts() {
+        sources = .none
+        micUID = nil
+        micName = nil
+        tappedPIDs = []
+        appSilentWhilePlaying = false
+        tapError = nil
+        feedbackLoop = false
+        feedbackLoopPIDs = []
+        aggregateID = nil
+        layout = nil
+        inputLayoutMethod = nil
+        outputLayoutMethod = nil
+        sampleRate = nil
+    }
 }
 
 /// Runs the engine and keeps it running: builds the tap and the private aggregate, starts the
@@ -110,7 +128,8 @@ public final class EngineController {
     public let engine: MixEngine
     public let audioSystem: AudioSystem
     private let scheduler: ControlScheduler
-    private let ownPID: pid_t
+    /// Duette's own process: never part of the tapped app, never a feedback loop.
+    public let ownPID: pid_t
 
     /// Levels sampled every `monitorInterval`, for diagnostics.
     public let meterHistory = MeterHistory()
@@ -221,10 +240,10 @@ public final class EngineController {
             self.monitorTimer?.cancel()
             self.monitorTimer = nil
             self.teardown()
+            self.failures = 0
             self.updateStatus {
                 $0.state = .idle
-                $0.feedbackLoop = false
-                $0.feedbackLoopPIDs = []
+                $0.clearEngineFacts()
             }
         }
     }
@@ -239,7 +258,8 @@ public final class EngineController {
     /// Running apps, those playing audio first.
     public func appChoices() -> [AppEntry] {
         ProcessCatalog.appEntries(runningApps: audioSystem.runningApps(), processes: audioSystem.processes(),
-                                  parentPID: audioSystem.parentPID)
+                                  parentPID: audioSystem.parentPID, responsiblePID: audioSystem.responsiblePID,
+                                  excludingPID: ownPID)
     }
 
     // MARK: - Events
@@ -250,7 +270,11 @@ public final class EngineController {
             asleep = true
             cancelPending()
             teardown()
-            updateStatus { $0.state = .idle }
+            failures = 0
+            updateStatus {
+                $0.state = .idle
+                $0.clearEngineFacts()
+            }
             return
         case .didWake:
             asleep = false
@@ -313,7 +337,8 @@ public final class EngineController {
         guard let bundleID = configuration.appBundleID else { return [] }
         return ProcessCatalog.processes(of: bundleID, in: audioSystem.processes(),
                                         appPIDs: Set(audioSystem.runningApplicationPIDs(bundleID: bundleID)),
-                                        parentPID: audioSystem.parentPID)
+                                        parentPID: audioSystem.parentPID, responsiblePID: audioSystem.responsiblePID,
+                                        excludingPID: ownPID)
     }
 
     private func facts(of device: AudioObjectID) -> DeviceFacts {
@@ -373,10 +398,7 @@ public final class EngineController {
         guard let sinkID = sink else {
             updateStatus {
                 $0.state = .waitingForDriver
-                $0.sources = .none
-                $0.aggregateID = nil
-                $0.layout = nil
-                $0.appSilentWhilePlaying = false
+                $0.clearEngineFacts()
             }
             checkFeedbackLoop()
             return
@@ -488,6 +510,12 @@ public final class EngineController {
         let streams = audioSystem.aggregateStreams(aggregate,
                                                    expectedInputs: inputMembers.reduce(0) { $0 + $1.streams.count },
                                                    expectedOutputs: outputMembers.reduce(0) { $0 + $1.streams.count })
+        for (scope, list) in [(kAudioObjectPropertyScopeInput, streams.input),
+                              (kAudioObjectPropertyScopeOutput, streams.output)] {
+            if let configuration = audioSystem.bufferChannels(of: aggregate, scope: scope) {
+                try StreamLayoutResolver.verifyBuffers(streams: list, configuration: configuration)
+            }
+        }
         return (try StreamLayoutResolver.resolve(streams: streams.input, members: inputMembers),
                 try StreamLayoutResolver.resolve(streams: streams.output, members: outputMembers))
     }
@@ -499,11 +527,8 @@ public final class EngineController {
         let attempt = failures
         updateStatus {
             $0.state = .error(status: failure.status, attempt: attempt)
-            $0.sources = .none
+            $0.clearEngineFacts()
             $0.lastError = failure
-            $0.aggregateID = nil
-            $0.layout = nil
-            $0.appSilentWhilePlaying = false
         }
         pendingRetry = scheduler.after(delay) { [weak self] in
             guard let self else { return }
@@ -547,10 +572,13 @@ public final class EngineController {
         }
     }
 
-    /// The tap has delivered only exact zeros for a while although the app is playing.
+    /// The tap has delivered nothing but exact zeros since it started, for a while, although the
+    /// app is playing. Once it has delivered sound, later silence is a quiet app, not a denial.
     private func captureLooksDenied() -> Bool {
         guard let session, session.tap != nil else { return false }
-        let silentSeconds = Double(engine.stats().tapZeroFrames) / session.sampleRate
+        let stats = engine.stats()
+        guard !stats.tapHadAudio else { return false }
+        let silentSeconds = Double(stats.tapZeroFrames) / session.sampleRate
         guard silentSeconds > Self.silenceHintSeconds else { return false }
         return audioSystem.processes().contains { session.group.contains($0.objectID) && $0.isRunningOutput }
     }
