@@ -76,6 +76,8 @@ public struct EngineStats: Equatable, Codable {
     public var micZeroFrames: UInt64 = 0
     public var layoutMismatches: UInt64 = 0
     public var overloads: UInt64 = 0
+    /// The tap delivered at least one non-zero sample since the engine was last configured.
+    public var tapHadAudio = false
 
     public init() {}
 
@@ -87,6 +89,7 @@ public struct EngineStats: Equatable, Codable {
         micZeroFrames = raw.mic_zero_frames
         layoutMismatches = raw.layout_mismatches
         overloads = raw.overloads
+        tapHadAudio = raw.tap_had_audio
     }
 }
 

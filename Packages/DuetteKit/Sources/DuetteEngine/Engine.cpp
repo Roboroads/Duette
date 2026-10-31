@@ -68,6 +68,7 @@ struct duette_engine {
   std::atomic<float> outRms{0.0f};
   duette::ZeroRunDetector tapZero;
   duette::ZeroRunDetector micZero;
+  std::atomic<bool> tapHadAudio{false};
   std::atomic<std::uint64_t> cycles{0};
   std::atomic<std::uint64_t> frames{0};
   std::atomic<std::uint64_t> lastHostTime{0};
@@ -178,6 +179,15 @@ duette::SmoothedGain settledGain(float rate, float gain, bool muted) noexcept {
   return stage;
 }
 
+// Meters read zero until the next cycle measures something.
+void clearMeters(duette_engine& engine) noexcept {
+  const duette::SourceView nothing;
+  engine.appMeter.update(nothing, 1);
+  engine.micMeter.update(nothing, 1);
+  engine.outPeak.store(0.0f, std::memory_order_relaxed);
+  engine.outRms.store(0.0f, std::memory_order_relaxed);
+}
+
 // The mixer starts at unity gain. Running it on silence for a little over one ramp makes it
 // arrive at the wanted gains before the first real cycle.
 void settle(duette::Mixer& mixer, double rate) noexcept {
@@ -216,13 +226,10 @@ duette_status duette_engine_configure(duette_engine* engine, const duette_layout
   engine->toneGain = duette::SmoothedGain(rate, engine->toneOn.load(std::memory_order_relaxed) ? 1.0f : 0.0f);
   engine->tone = duette::ToneGenerator(rate, kToneFrequency, kToneAmplitude);
 
-  const duette::SourceView nothing;
-  engine->appMeter.update(nothing, 1);
-  engine->micMeter.update(nothing, 1);
-  engine->outPeak.store(0.0f, std::memory_order_relaxed);
-  engine->outRms.store(0.0f, std::memory_order_relaxed);
+  clearMeters(*engine);
   engine->tapZero.reset();
   engine->micZero.reset();
+  engine->tapHadAudio.store(false, std::memory_order_relaxed);
   engine->configured = true;
   return DUETTE_STATUS_OK;
 }
@@ -278,6 +285,7 @@ void duette_engine_read_stats(const duette_engine* engine, duette_stats* stats) 
   stats->mic_zero_frames = engine->micZero.zeroFrames();
   stats->layout_mismatches = engine->mismatches.load(std::memory_order_relaxed);
   stats->overloads = engine->overloads.load(std::memory_order_relaxed);
+  stats->tap_had_audio = engine->tapHadAudio.load(std::memory_order_relaxed);
 }
 
 void duette_engine_count_overload(duette_engine* engine) {
@@ -330,7 +338,13 @@ OSStatus duette_engine_ioproc(AudioObjectID /*device*/, const AudioTimeStamp* no
   // Source levels before their gain, so a muted mic still shows it is picking something up.
   e.appMeter.update(tap, frames);
   e.micMeter.update(mic, frames);
-  if (tap.channels() > 0) e.tapZero.update(tap, frames);
+  if (tap.channels() > 0 && frames > 0) {
+    e.tapZero.update(tap, frames);
+    // A run shorter than this block means one of its samples was not zero.
+    if (e.tapZero.zeroFrames() < frames && !e.tapHadAudio.load(std::memory_order_relaxed)) {
+      e.tapHadAudio.store(true, std::memory_order_relaxed);
+    }
+  }
   if (mic.channels() > 0) e.micZero.update(mic, frames);
 
   e.mixer.process(tap, mic, out, frames);
@@ -392,6 +406,8 @@ OSStatus duette_engine_stop(duette_engine* engine, AudioObjectID device, AudioDe
   if (engine == nullptr) return kAudio_ParamError;
   const OSStatus stopped = AudioDeviceStop(device, proc_id);
   const OSStatus destroyed = AudioDeviceDestroyIOProcID(device, proc_id);
+  // The IOProc no longer runs, so nothing else writes the meters now.
+  clearMeters(*engine);
   engine->running.store(false, std::memory_order_release);
   return stopped != noErr ? stopped : destroyed;
 }
