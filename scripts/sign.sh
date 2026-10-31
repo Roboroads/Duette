@@ -21,8 +21,11 @@
 #   DUETTE_APP_IDENTITY              use this codesign identity instead of searching
 #   DUETTE_INSTALLER_IDENTITY        use this productbuild identity (a common name)
 #                                    instead of searching
-#   DUETTE_APP_ENTITLEMENTS          entitlements file for the app
-#                                    (default app/Duette/Duette.entitlements)
+#   DUETTE_APP_ENTITLEMENTS          entitlements file for the app (default
+#                                    app/Duette/Duette.entitlements). A Developer ID
+#                                    build fails unless it exists, sets
+#                                    com.apple.security.device.audio-input and has no
+#                                    com.apple.security.get-task-allow.
 #   DUETTE_OUT_DIR                   where the products are (default build/out)
 #   DUETTE_KEYCHAIN                  path of the temporary keychain
 #
@@ -186,6 +189,18 @@ verify_item() {
   fi
 }
 
+# check_entitlements <plist>: the app must have the microphone entitlement and no
+# debug-only get-task-allow.
+check_entitlements() {
+  local file="$1" value
+  plutil -lint "$file" > /dev/null 2>&1 || die "$file is not a valid entitlements plist"
+  value="$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$file" 2> /dev/null || true)"
+  [ "$value" = "true" ] || die "$file must set com.apple.security.device.audio-input to true. Without it the hardened runtime blocks the microphone."
+  if /usr/libexec/PlistBuddy -c "Print :com.apple.security.get-task-allow" "$file" > /dev/null 2>&1; then
+    die "$file contains com.apple.security.get-task-allow, which notarization rejects."
+  fi
+}
+
 cmd_bundles() {
   APP_IDENTITY="$(app_identity)"
   if [ -n "$APP_IDENTITY" ]; then
@@ -199,10 +214,17 @@ cmd_bundles() {
   [ -d "$app" ] || die "$app not found. Run scripts/ci/build-app.sh first."
 
   local entitlements=""
-  if [ -f "$APP_ENTITLEMENTS" ]; then
+  if [ -n "$APP_IDENTITY" ]; then
+    # A release build must carry exactly the entitlements the repo declares: the
+    # hardened runtime blocks the microphone without audio-input, and notarization
+    # rejects get-task-allow. Do not fall back to whatever the Xcode build embedded.
+    [ -f "$APP_ENTITLEMENTS" ] || die "$APP_ENTITLEMENTS not found. A Developer ID build needs the app's entitlements file (see scripts/ci/README.md)."
+    check_entitlements "$APP_ENTITLEMENTS"
+    entitlements="$APP_ENTITLEMENTS"
+  elif [ -f "$APP_ENTITLEMENTS" ]; then
     entitlements="$APP_ENTITLEMENTS"
   else
-    # Fall back to what the Xcode build already embedded in the app.
+    # Ad-hoc test build: keep what the Xcode build already embedded.
     local extracted
     extracted="$(mktemp)"
     codesign -d --entitlements :- "$app" > "$extracted" 2> /dev/null || true
@@ -223,9 +245,14 @@ cmd_bundles() {
   verify_item "$driver"
   verify_item "$app"
   if [ -f "$cli" ]; then verify_item "$cli"; fi
-  if [ -n "$APP_IDENTITY" ] && [ -n "$entitlements" ]; then
-    echo "Entitlements on the app:"
-    codesign -d --entitlements :- "$app" 2> /dev/null || true
+  if [ -n "$APP_IDENTITY" ]; then
+    # Read back what ended up in the signature, not what we passed in.
+    local signed
+    signed="$(mktemp)"
+    codesign -d --entitlements :- "$app" > "$signed" 2> /dev/null || true
+    echo "Entitlements on the signed app:"
+    cat "$signed"
+    check_entitlements "$signed"
   fi
 }
 
