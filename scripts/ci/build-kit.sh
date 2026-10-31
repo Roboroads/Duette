@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Build and test the DuetteKit SwiftPM package (Packages/DuetteKit). macOS only.
+#
+# Steps: debug build, `swift test`, then a release build so optimizer-only problems show up too.
+# Build trees go to build/kit (git-ignored), never into the package folder.
+#
+# Environment:
+#   DUETTE_KIT_BUILD_DIR  where the build trees go (default: <repo>/build/kit)
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+repo_root=$(pwd)
+package=$repo_root/Packages/DuetteKit
+build_root=${DUETTE_KIT_BUILD_DIR:-$repo_root/build/kit}
+
+if [ "$(uname -s)" != Darwin ]; then
+  echo "build-kit.sh: DuetteKit needs macOS and its SDK" >&2
+  exit 2
+fi
+
+swift --version
+
+echo "==> DuetteKit: debug build"
+swift build --package-path "$package" --scratch-path "$build_root/debug"
+
+echo "==> DuetteKit: tests"
+swift test --package-path "$package" --scratch-path "$build_root/debug"
+
+echo "==> DuetteKit: release build"
+swift build --package-path "$package" --scratch-path "$build_root/release" -c release
+
+echo "==> DuetteKit passed"
