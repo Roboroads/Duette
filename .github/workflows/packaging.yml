@@ -62,7 +62,7 @@ jobs:
 
       - name: release-please config and manifest are valid
         run: |
-          jq -e '."release-type" == "simple" and .prerelease == true and ."include-component-in-tag" == false' release-please-config.json
+          jq -e '."release-type" == "simple" and .prerelease == true and ."include-component-in-tag" == false and ."initial-version" == "0.1.0"' release-please-config.json
           jq -e '."." | type == "string"' .release-please-manifest.json
 
   pkg-dry-run:
@@ -131,6 +131,8 @@ jobs:
       - name: Import and sign
         env:
           APPLE_TEAM_ID: TEST123456
+          # The stand-in app has no app/Duette/Duette.entitlements, which a Developer ID build requires.
+          DUETTE_APP_ENTITLEMENTS: packaging/tests/stub.entitlements
         run: |
           MACOS_CERT_APP_P12_BASE64="$(cat "$RUNNER_TEMP/identities/application.p12.b64")"
           MACOS_CERT_INSTALLER_P12_BASE64="$(cat "$RUNNER_TEMP/identities/installer.p12.b64")"
@@ -149,6 +151,21 @@ jobs:
           echo "installer identity (name): $installer"
           [[ "$app" =~ ^[0-9A-F]{40}$ ]]
           [ "$installer" = "Developer ID Installer: Duette CI Probe (TEST123456)" ]
+
+      - name: A Developer ID build refuses missing or wrong entitlements
+        env:
+          APPLE_TEAM_ID: TEST123456
+        run: |
+          write_plist() { printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict>' "$1" '</dict></plist>' > "$2"; }
+          write_plist '' "$RUNNER_TEMP/none.entitlements"
+          write_plist '<key>com.apple.security.device.audio-input</key><true/><key>com.apple.security.get-task-allow</key><true/>' "$RUNNER_TEMP/debug.entitlements"
+          for file in "$RUNNER_TEMP/missing.entitlements" "$RUNNER_TEMP/none.entitlements" "$RUNNER_TEMP/debug.entitlements"; do
+            if DUETTE_APP_ENTITLEMENTS="$file" bash scripts/sign.sh bundles; then
+              echo "::error::sign.sh accepted $file"
+              exit 1
+            fi
+            echo "refused $file, as it should"
+          done
 
       - name: Delete the temporary keychain
         if: ${{ always() }}
@@ -181,6 +198,7 @@ jobs:
       - name: Sign bundles
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          DUETTE_APP_ENTITLEMENTS: packaging/tests/stub.entitlements
         run: bash scripts/sign.sh bundles
 
       - name: Build pkg

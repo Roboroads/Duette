@@ -19,7 +19,7 @@ Signing and notarization need the secrets from [SIGNING.md](SIGNING.md). Without
 
 If the secrets are missing, step 4 builds an ad-hoc pkg, keeps it as a workflow artifact and uploads nothing to the release. Add the secrets and re-run: **Actions**, **Release**, **Run workflow**, with the tag name (for example `v0.1.0`).
 
-The first release is `0.1.0`, because the manifest starts at `0.0.0` and the first `feat:` bumps the minor version.
+The first release is `0.1.0`, because `release-please-config.json` sets `"initial-version": "0.1.0"`. Without that setting release-please ignores the `0.0.0` in the manifest and makes the first release `1.0.0`, a full release instead of a prerelease.
 
 ## A test build from any branch
 
@@ -47,6 +47,7 @@ The pkg is at `https://github.com/Roboroads/Duette/releases/download/test-abc123
 
 Things to know:
 
+- Only build trusted refs. The build runs the scripts of the commit it builds, with the signing secrets in reach. `prerelease.yml` and `release.yml` therefore refuse any commit that is not on a branch or tag of this repository (for example a commit from a fork's pull request). Anything pushed to a branch here is built, so treat write access like access to the secrets.
 - The branch has to contain `prerelease.yml`, `release.yml` and the scripts, because the workflow runs the files of the commit it builds. Merge `main` into your branch first.
 - A run takes roughly 10 minutes plus notarization, which is usually a few minutes.
 - Running it again on the same commit replaces the files of the same `test-<shortsha>` release.
@@ -61,7 +62,7 @@ gh release delete test-abc1234 --repo Roboroads/Duette --cleanup-tag --yes
 
 ## On the Mac that tests
 
-1. Download the pkg from the release page and double-click it. A notarized pkg opens without a warning. An unsigned one needs a right-click, **Open**.
+1. Download the pkg from the release page and double-click it. A notarized pkg opens without a warning. An unsigned one is refused the first time: double-click it once, then open **System Settings**, **Privacy & Security**, scroll down to the message about the pkg and click **Open Anyway**.
 2. Follow the installer. Audio pauses for a second while the audio system restarts, and the Duette icon appears in the menu bar.
 3. If the app does not open, run `sudo "/Library/Application Support/Duette/duette-diagnose.sh"` in Terminal. It puts a zip on the Desktop to send back.
 4. Remove it with `sudo "/Library/Application Support/Duette/uninstall.sh"`. Installing the next test build over the old one does not need an uninstall first.
