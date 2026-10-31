@@ -1,12 +1,14 @@
-import DuetteAudio
 import SwiftUI
 
 @main
 struct DuetteApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
-        MenuBarExtra("Duette", systemImage: "waveform.circle") {
-            Text(DuetteDriver.deviceUID)
-                .padding()
+        MenuBarExtra {
+            MenuView(model: appDelegate.model)
+        } label: {
+            MenuBarLabel(model: appDelegate.model)
         }
         .menuBarExtraStyle(.window)
     }
