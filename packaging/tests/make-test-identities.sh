@@ -17,8 +17,8 @@ cd "$dir"
 password="$(uuidgen)"
 printf '%s' "$password" > password
 
-make_identity() { # <file name> <common name> <extended key usage>
-  local name="$1" cn="$2" eku="$3"
+make_identity() { # <file name> <common name> <extended key usage> <Apple marker extension OID>
+  local name="$1" cn="$2" eku="$3" marker="$4"
   cat > "$name.cnf" << EOF
 [req]
 distinguished_name = dn
@@ -30,6 +30,7 @@ CN = $cn
 basicConstraints = critical, CA:false
 keyUsage = critical, digitalSignature
 extendedKeyUsage = critical, $eku
+$marker = DER:0500
 EOF
   openssl req -x509 -newkey rsa:2048 -nodes -days 2 -config "$name.cnf" \
     -keyout "$name.key" -out "$name.pem" 2> /dev/null
@@ -42,8 +43,9 @@ EOF
   base64 < "$name.p12" | tr -d '\n' > "$name.p12.b64"
 }
 
-make_identity application "Developer ID Application: Duette CI Probe (TEST123456)" "codeSigning"
-make_identity installer "Developer ID Installer: Duette CI Probe (TEST123456)" "codeSigning, 1.2.840.113635.100.4.13"
+# Apple marks its Developer ID certificates with a NULL extension: .33 for Application, .14 for Installer.
+make_identity application "Developer ID Application: Duette CI Probe (TEST123456)" "codeSigning" "1.2.840.113635.100.6.1.33"
+make_identity installer "Developer ID Installer: Duette CI Probe (TEST123456)" "codeSigning, 1.2.840.113635.100.4.13" "1.2.840.113635.100.6.1.14"
 # Keep the two public certificates (application.pem, installer.pem) so a caller can trust them.
 rm -f ./*.key ./*.cnf ./*.p12
 echo "Wrote application.p12.b64, installer.p12.b64, the .pem certificates and password to $dir"
