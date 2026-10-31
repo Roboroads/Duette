@@ -81,7 +81,7 @@ Open Terminal (press Command and Space, type Terminal, press Return), paste this
 sudo "/Library/Application Support/Duette/uninstall.sh"
 ```
 
-It asks for your password, quits Duette and removes the app and the part that adds the "Duette" microphone to your Mac. Sound pauses for a moment. Your Duette settings stay in `~/Library/Preferences`, so a later reinstall keeps them.
+It asks for your password, quits Duette, takes it out of your Login Items and removes the app and the part that adds the "Duette" microphone to your Mac. Sound pauses for a moment. Your Duette settings stay in `~/Library/Preferences`, so a later reinstall keeps them. If the script says it could not take Duette out of Login Items by itself, open System Settings > General > Login Items & Extensions and remove Duette there.
 
 ## Known limitations
 
