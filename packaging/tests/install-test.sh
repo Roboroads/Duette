@@ -61,12 +61,58 @@ else
   fail "no diagnostics zip"
 fi
 
-echo "--- uninstaller"
-sudo "$SUPPORT/uninstall.sh"
+NOTE_TEXT="Login Items & Extensions"
+MARKER="/tmp/duette-stub-unregister"
+work_dir="$(mktemp -d)"
+cp "$SUPPORT/uninstall.sh" "$work_dir/uninstall.sh"
+
+# The uninstaller asks the app to take itself out of Login Items, as the person at the console
+# (the stub app, built by make-stub-bundles.sh, leaves a line in $MARKER when it is asked). With
+# nobody at the console it cannot, and has to say how to do it by hand.
+console="$(stat -f%Su /dev/console 2> /dev/null || true)"
+console_user_present=0
+case "$console" in
+  '' | root | loginwindow) ;;
+  *)
+    # The same chain the uninstaller uses to reach the person's login session.
+    console_uid="$(id -u "$console")"
+    if sudo /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console" /usr/bin/true; then
+      console_user_present=1
+    else
+      echo "::notice::Cannot reach the login session of '$console' here, so the uninstaller has to fall back to its note."
+    fi
+    ;;
+esac
+echo "--- uninstaller (console user: '${console}', login session reachable: ${console_user_present})"
+sudo rm -f "$MARKER"
+sudo "$SUPPORT/uninstall.sh" 2>&1 | tee "$work_dir/uninstall.out"
 check_gone "$APP"
 check_gone "$DRIVER"
 check_gone "$SUPPORT"
 if pkgutil --pkg-info me.roboroads.duette.pkg > /dev/null 2>&1; then fail "receipt is still there"; else pass "receipt forgotten"; fi
+
+echo "--- the login item"
+if [ "$console_user_present" -eq 1 ]; then
+  if grep -qx -- '--unregister-login-item' "$MARKER" 2> /dev/null; then pass "the app was run with --unregister-login-item"; else fail "the app was never asked to remove its login item"; fi
+  if grep -q 'Removed Duette from Login Items.' "$work_dir/uninstall.out"; then pass "the app's answer is in the uninstaller output"; else fail "no answer from the app in the output"; fi
+  if grep -q 'Could not take Duette out of Login Items by itself' "$work_dir/uninstall.out"; then fail "the by-hand note was printed although the app did it"; else pass "no by-hand note needed"; fi
+  if grep -qF "Duette was removed for $console only. Every other user" "$work_dir/uninstall.out"; then pass "the summary says it was removed for $console only"; else fail "no summary that the login item was removed for $console only"; fi
+else
+  if [ -e "$MARKER" ]; then fail "the app was run with nobody at the console"; else pass "the app was not run with nobody at the console"; fi
+  if grep -q "$NOTE_TEXT" "$work_dir/uninstall.out"; then pass "the note about Login Items & Extensions was printed"; else fail "no note about removing the login item by hand"; fi
+  if grep -qF 'in every user account that switched on' "$work_dir/uninstall.out"; then pass "the summary points every user at Login Items & Extensions"; else fail "no per-user summary"; fi
+fi
+
+echo "--- the uninstaller on a Mac where Duette is already gone"
+sudo rm -f "$MARKER"
+if sudo /bin/bash "$work_dir/uninstall.sh" 2>&1 | tee "$work_dir/second.out"; then pass "second run succeeds"; else fail "second run failed"; fi
+for path in "$APP" "$DRIVER" "$SUPPORT"; do
+  if grep -qF "Not installed: $path" "$work_dir/second.out"; then pass "second run says 'Not installed: $path'"; else fail "second run does not mention $path"; fi
+done
+if grep -q 'Could not take Duette out of Login Items by itself' "$work_dir/second.out" && grep -q "$NOTE_TEXT" "$work_dir/second.out"; then pass "second run points at Login Items & Extensions (there is no app left to ask)"; else fail "second run has no note about the login item"; fi
+if grep -qF 'in every user account that switched on' "$work_dir/second.out"; then pass "second run has the per-user summary"; else fail "second run has no per-user summary"; fi
+if [ -e "$MARKER" ]; then fail "the second run started an app that is not there"; else pass "no app was run the second time"; fi
+if grep -q '^Duette is removed\.$' "$work_dir/second.out"; then pass "second run ends with 'Duette is removed.'"; else fail "second run does not end in 'Duette is removed.'"; fi
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures check(s) failed."

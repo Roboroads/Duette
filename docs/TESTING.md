@@ -276,7 +276,7 @@ Keep the zip from this step and send it with your notes, even if everything pass
 
 ## Day 2: the real call, recovery and edge cases
 
-About 90 minutes. Start with Duette running and Discord signed in.
+About 100 minutes, 22 of them the soak in step 2.11. Start with Duette running and Discord signed in.
 
 ### 2.1 The Discord call
 
@@ -308,18 +308,20 @@ Send the diagnostics zip right away, while the call is still on, and the step nu
 
 **Do**
 
-1. Open "For experts". Write down "Estimated delay: about N ms" and "Missed deadlines".
-2. Run "Measure latency". <!-- S9: verify wording -->
-3. Write down the number it shows, and the buffer size it was measured at (128 frames by default). <!-- S9: verify wording -->
+1. Open "For experts". Write down the line "Estimated delay: about N ms (your microphone to other apps: about M ms)" and the line "Missed deadlines". The buffer size is 128 frames unless you changed it.
+2. Click the button "Measure latency". It reads "Measuring…" for about a second. Anything that is listening to "Duette" at that moment, such as the OBS or QuickTime recording from 2.1, hears a short silence and a soft chirp or two. That is meant to happen; Duette says so under the button.
+3. Write down what it shows when it is done: the bold line "Duette adds about N ms of delay.", the line "Your microphone to other apps: about M ms.", and the line "Measured with a test sound: X ms (expected Y ms)."
 
 **Expect**
 
-- An estimated delay of roughly 10 to 12 ms at 128 frames, and a measured figure within 1 ms of it. Under 20 ms is the goal. <!-- S9: verify wording -->
+- "Your microphone to other apps" is roughly 10 to 12 ms at 128 frames. Under 20 ms is the goal.
+- "Measured with a test sound" is within 1 ms of "expected". "Duette adds" is that measured figure rounded, so it is smaller than "Your microphone to other apps", which also counts the microphone side.
 - "Missed deadlines" is 0.
+- The sound in your headphones carries on as before, with at most a tiny gap while it measures.
 
 **If it fails**
 
-Send the diagnostics zip and the step number. A bigger number is not a failure of the test, it is a result: send it.
+Send the diagnostics zip and the step number. A bigger number is not a failure of the test, it is a result: send it. If the button shows a sentence instead of a number, send that sentence word for word. The ones you can fix yourself: "Duette couldn't hear its test sound. Check that Duette may use the microphone, then try again." (look at step 2.10 and try again) and "Duette is restarting. Try again in a moment." (wait for a green status line and try again). Others are "Duette isn't running yet, so there is nothing to measure.", "Duette's driver isn't installed. Run the Duette installer and try again." and "The measurement didn't work. Please try again."
 
 ### 2.3 Discord restart
 
@@ -381,15 +383,15 @@ Send the diagnostics zip and the step number. Say how long the status line staye
 
 **Do**
 
-1. In the call with a recording running, open "For experts". Next to "Buffer size", choose "64 frames". Talk for 30 seconds. Note the "Missed deadlines" count.
-2. Do the same at "256 frames" and "512 frames".
+1. In the call with a recording running, open "For experts". Next to "Buffer size", choose "64 frames". Talk for 30 seconds. Note the "Missed deadlines" count. Then click "Measure latency" and write down "Duette adds about N ms of delay." and "Your microphone to other apps: about M ms." (Choosing another buffer size clears the last answer, so measure before you change it again.)
+2. Do the same at "256 frames", with "Measure latency". Then choose "512 frames", talk and note "Missed deadlines" only.
 3. End on "128 frames".
-4. Run "Measure latency" at 64 and at 256 frames. <!-- S9: verify wording -->
 
 **Expect**
 
 - Each change takes a moment, then audio is back by itself. The recording is clean at every size. A busy Mac may crackle at 64 frames. If it does, write that down. It decides whether 128 stays the default.
-- "Estimated delay" gets bigger with the buffer size.
+- "Estimated delay" gets bigger with the buffer size, and so do the two figures from "Measure latency" (roughly 7 ms from your microphone to other apps at 64 frames, 10 to 12 ms at 128).
+- At 64 and at 256 frames, "Measured with a test sound" is within 1 ms of "expected".
 - "Missed deadlines" stays 0, or close to it.
 
 **If it fails**
@@ -475,6 +477,8 @@ Send the diagnostics zip and the step number. Say how Discord was set, and wheth
 3. Wait 5 seconds and open the Duette menu.
 4. Click "Open Settings".
 5. Switch Duette on again and watch the menu.
+6. Now the other way round. With Duette running, Discord playing sound and the "Sound from Discord" bar moving, go back to System Settings and switch Duette off, without quitting Duette. Keep Discord playing sound and watch the Duette menu for 15 seconds.
+7. Switch Duette on again.
 
 **Expect**
 
@@ -482,6 +486,7 @@ Send the diagnostics zip and the step number. Say how Discord was set, and wheth
 - Your microphone keeps working: a recording of "Duette" still has your voice.
 - "Open Settings" opens Privacy & Security on the Screen & System Audio Recording page.
 - After you switch Duette on again, the red line goes away and the other person's sound is back within a few seconds. If it doesn't, quit and reopen Duette, and note that you had to.
+- In step 6 the same red line shows within about 10 seconds, without quitting Duette. A quiet moment in the call does not turn it red, only the switch does. If macOS asks to quit Duette when you switch it off, let it, open Duette again and write that down. If the line stays green for the 15 seconds although the "Sound from Discord" bar has gone still, write that down too: quitting and opening Duette shows it as in steps 2 and 3.
 
 **Part B: microphone**
 
@@ -503,40 +508,48 @@ Send the diagnostics zip and the step number. Say how Discord was set, and wheth
 
 Send the diagnostics zip and the step number (2.10A or 2.10B). Say whether the status line text matched the quoted one.
 
-### 2.11 Ten-minute soak
+### 2.11 Soak (about 22 minutes)
 
-<!-- S9: verify wording -->
-
-This runs the engine for ten minutes in Terminal and checks the sound the whole time. It finds the slow failures: a dropout after five minutes, a creeping delay. If this build has no soak mode that works on a Mac like this one, use the fallback below.
+This runs Duette's engine in Terminal with your real microphone and checks the sound the whole time. It finds the slow failures: a dropout after five minutes, a creeping delay, missed deadlines. It starts with a 30-second control (how this Mac behaves without Duette), then runs 10 minutes at 128 frames and 10 minutes at 64 frames, each ending with "Measure latency". It needs sound near the microphone from start to finish, because a dropout can only show in a second that has sound. If this build has no soak command, or it won't run on your Mac, use the fallback below.
 
 **Do**
 
-1. Quit Duette from its menu. The test builds its own engine, and two engines at once would confuse the result.
+1. Quit Duette from its menu ("Quit Duette"). The test runs its own engine, and two engines at once would confuse the result, so it refuses to start while the app is open.
 2. Close the other heavy apps. Keep the Mac awake and plugged in.
-3. In Terminal:
+3. Get your sound ready: music or a podcast, on a phone or on the Mac's own speakers, close to the Mac's microphone. The microphone has to hear it, so headphones on the Mac don't help here.
+4. In Terminal:
 
 ```sh
-"/Library/Application Support/Duette/duettectl" soak --minutes 10
+"/Library/Application Support/Duette/duettectl" soak --hands-on
 ```
 
-<!-- S9: verify wording -->
-
-4. When it finishes, run `echo $?`.
-5. Open Duette again from Applications.
+5. It first prints "Keep sound going near the microphone the whole time: play music near the Mac, or keep talking. This takes about 22 minutes." Start the sound now and keep it going until the end. It prints a line a minute while it runs.
+6. When it stops, run `echo $?`.
+7. Open Duette again from Applications.
 
 **Expect**
 
 - macOS may ask whether Terminal may use the microphone. Choose OK and run the command again.
-- It prints progress for ten minutes, then check lines, with no `FAIL`. The last line ends in `0 failed`, and `echo $?` prints `0`. <!-- S9: verify wording -->
-- If it prints `SKIP test-devices` and stops straight away, this build's soak can't run on a Mac without test devices. Send that output.
+- A verdict line, then the file to send, as the last two lines:
+
+```
+SOAK PASS: 10 min at 128 and 64 frames each: no dropouts, no missed deadlines
+Send this file: /Users/<you>/Desktop/Duette-soak-<date>-<time>.txt
+```
+
+- `echo $?` prints `0` for `SOAK PASS`.
+- `SOAK FAIL: <check>: <value>` (for example `SOAK FAIL: 64.overloads: 3`) means the soak found a problem, and `echo $?` prints `1`. That is a result, not a mistake of yours. Send the file.
+- `SOAK INCONCLUSIVE: ...` means too little sound reached the microphone to test anything, and `echo $?` prints `2`. It ends with "Keep sound going near the microphone (play music or keep talking) and run it again." Run it again with louder sound or closer to the Mac. It is not a pass.
+- If it stops at once with `SOAK FAIL: duette-app-quit: the Duette app is running`, Duette is still open. Quit it and run the command again.
+- If it can't write to the Desktop it says "Cannot write ... the result goes to ... instead" and puts the file in the folder Terminal is in, and the last line names that file.
 
 **If it fails**
 
-Send the whole Terminal output (select all, copy, paste into a text file), the step number, and the diagnostics zip from Duette after you open it again.
+Send the file named on the last line (do this for a pass too), the whole Terminal output (select all, copy, paste into a text file), the step number, and the diagnostics zip from Duette after you open it again. If there is no file, send the Terminal output alone.
 
 **Fallback: a 30-minute call**
 
-Use this when the command above isn't in this build, or prints `SKIP`.
+Use this when the command above isn't in this build, won't run on your Mac, or ends in `SOAK INCONCLUSIVE` twice.
 
 1. Open Duette and "For experts". Write down "Missed deadlines" (call it A).
 2. Join a Discord call with "Discord" chosen in Duette, and record "Duette" in OBS or QuickTime the whole time. Keep the Mac awake and plugged in. Talk now and then, and use the Mac as you normally would.
@@ -648,21 +661,22 @@ Send the diagnostics zip and the step number. Say which line in this list didn't
 
 **Do**
 
-1. Open Terminal and run:
+1. In the Duette menu, make sure "Open Duette when I log in" is on, and look in System Settings, then General, then Login Items & Extensions: Duette is in the list. This gives the uninstaller something to remove.
+2. Open Terminal and run:
 
 ```sh
 sudo "/Library/Application Support/Duette/uninstall.sh"
 ```
 
-2. Check System Settings, then Sound, then Input, the Applications folder, the menu bar, and System Settings, then General, then Login Items & Extensions.
-3. Optional: download `uninstall.sh` from the release page and run it with `sudo bash ~/Downloads/uninstall.sh`.
+3. Check System Settings, then Sound, then Input, the Applications folder, the menu bar, and System Settings, then General, then Login Items & Extensions.
+4. Optional: download `uninstall.sh` from the release page and run it with `sudo bash ~/Downloads/uninstall.sh`.
 
 **Expect**
 
-- It asks for your password if you didn't use `sudo`. It prints `Removed /Applications/Duette.app`, `Removed /Library/Audio/Plug-Ins/HAL/Duette.driver`, `Removed /Library/Application Support/Duette`, `Forgot installer receipt me.roboroads.duette.pkg`, `Restarting the audio system.` and ends with `Duette is removed.`
+- It asks for your password if you didn't use `sudo`. It prints `Quitting Duette...` if the app was open, then `Removed Duette from Login Items.`, `Removed /Applications/Duette.app`, `Removed /Library/Audio/Plug-Ins/HAL/Duette.driver`, `Removed /Library/Application Support/Duette`, `Forgot installer receipt me.roboroads.duette.pkg`, `Restarting the audio system.`, a line "Login Items: Duette was removed for <your user name> only. Every other user who switched on "Open Duette when I log in" removes it in System Settings > General > Login Items & Extensions." and ends with `Duette is removed.` The login item belongs to each user, so the uninstaller can only remove the one of the user who is logged in. If the Mac has other users who switched it on, they remove Duette in Login Items & Extensions themselves.
 - Audio pauses for a moment.
-- The Duette icon is gone from the menu bar, "Duette" is gone from Sound settings, and there is no Duette in Applications. Write down whether Duette is still listed under Login Items & Extensions.
-- The second run, from the downloaded copy, prints `Not installed:` for each path and ends with `Duette is removed.` Your Duette preferences stay on the Mac on purpose.
+- The Duette icon is gone from the menu bar, "Duette" is gone from Sound settings, and there is no Duette in Applications. Duette is gone from Login Items & Extensions too. If it is still listed, write that down, and check whether the Terminal output said "Could not take Duette out of Login Items by itself." That line is followed by a note: open System Settings > General > Login Items & Extensions and remove Duette there. Do that, and the uninstall is still complete.
+- The second run, from the downloaded copy, prints `Not installed:` for each path, the same note about Login Items & Extensions (there is no app left to ask), and ends with `Duette is removed.` Your Duette preferences stay on the Mac on purpose.
 
 **If it fails**
 

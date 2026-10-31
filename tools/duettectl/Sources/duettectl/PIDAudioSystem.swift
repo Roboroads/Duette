@@ -58,6 +58,9 @@ final class PIDAudioSystem: AudioSystem {
     }
 
     func parentPID(of pid: pid_t) -> pid_t? { base.parentPID(of: pid) }
+
+    func systemAudioCaptureAuthorization() -> CaptureAuthorization { base.systemAudioCaptureAuthorization() }
+    func systemAudioCaptureRawAnswer() -> Int32? { base.systemAudioCaptureRawAnswer() }
     func responsiblePID(of pid: pid_t) -> pid_t? { base.responsiblePID(of: pid) }
     func inputClientPIDs() -> [pid_t]? { base.inputClientPIDs() }
 

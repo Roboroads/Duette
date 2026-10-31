@@ -62,4 +62,12 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(OnboardingText.text(for: .appSound, appName: "Discord").body.contains("Discord"))
         XCTAssertFalse(OnboardingText.text(for: .appSound, appName: nil).body.isEmpty)
     }
+
+    func testTheAppSoundScreenWithNoAppChosenTellsThemToPickOne() {
+        let text = OnboardingText.text(for: .appSound, appName: nil)
+        XCTAssertEqual(text.title, "Let Duette hear your app")
+        XCTAssertEqual(text.body, "Pick the app whose sound you want to share, like Discord. "
+            + "You can change it later in the menu.")
+        XCTAssertFalse(text.body.contains("you share"), "the old sentence made no sense without an app")
+    }
 }

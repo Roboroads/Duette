@@ -114,6 +114,131 @@ final class ControllerReviewFixTests: XCTestCase {
         XCTAssertTrue(controller.status.appSilentWhilePlaying)
     }
 
+    // MARK: Permission switched off while Duette runs
+
+    private var hint: Bool { controller.status.appSilentWhilePlaying }
+
+    func testPermissionSwitchedOffAfterSoundShowsTheHintWithoutARestart() throws {
+        system.captureAuthorization = .authorized
+        controller.start(EngineConfiguration(appBundleID: discord))
+        let rebuilds = controller.status.rebuildCount
+        try feed(seconds: 0.2, tap: 0.3)
+        scheduler.advance(by: 0.5)
+        XCTAssertFalse(hint, "the tap carries sound")
+
+        // System Audio Recording is switched off: the tap carries exact zeros from now on, but the
+        // app keeps playing.
+        try feed(seconds: 4, tap: 0)
+        scheduler.advance(by: 0.5)
+        XCTAssertFalse(hint, "macOS still says it is allowed, so this is a quiet app")
+
+        system.captureAuthorization = .denied
+        scheduler.advance(by: EngineController.permissionCheckSeconds + EngineController.monitorInterval)
+        XCTAssertTrue(hint, "macOS says it is denied and the tap is silent while the app plays")
+        XCTAssertEqual(controller.status.rebuildCount, rebuilds, "no rebuild or restart was needed")
+        XCTAssertTrue(controller.engine.stats().tapHadAudio)
+
+        // Switched on again: the line goes away even before the app makes a sound, and the tap is
+        // rebuilt once so it comes back.
+        system.captureAuthorization = .authorized
+        scheduler.advance(by: EngineController.permissionCheckSeconds + EngineController.monitorInterval
+            + EngineController.debounceInterval + 0.1)
+        XCTAssertFalse(hint)
+        XCTAssertEqual(controller.status.rebuildCount, rebuilds + 1)
+    }
+
+    func testAQuietCallIsNeverAPermissionHintWhenMacOSAllowsOrDoesNotSay() throws {
+        for answer in [CaptureAuthorization.authorized, .unknown] {
+            let checksBefore = system.captureAuthorizationChecks
+            system.captureAuthorization = answer
+            controller.start(EngineConfiguration(appBundleID: discord))
+            let rebuilds = controller.status.rebuildCount
+            try feed(seconds: 0.2, tap: 0.3)
+            try feed(seconds: 30, tap: 0)
+            scheduler.advance(by: 20)
+            XCTAssertFalse(hint, "\(answer): exact zeros from a playing app are a quiet call, not a denial")
+            XCTAssertEqual(controller.status.rebuildCount, rebuilds, "\(answer): nothing to rebuild")
+            let checks = system.captureAuthorizationChecks - checksBefore
+            XCTAssertGreaterThan(checks, 0, "\(answer): it did look")
+            XCTAssertLessThanOrEqual(Double(checks), 20 / EngineController.permissionCheckSeconds + 1,
+                                     "\(answer): macOS is asked every few seconds, not every tick")
+            controller.stop()
+        }
+    }
+
+    func testMacOSIsNotAskedAndNoHintShowsWhileTheAppIsNotPlaying() throws {
+        system.captureAuthorization = .denied
+        controller.start(EngineConfiguration(appBundleID: discord))
+        try feed(seconds: 0.2, tap: 0.3)
+        system.processList = system.processList.map { process in
+            var paused = process
+            paused.isRunningOutput = false
+            return paused
+        }
+        try feed(seconds: 4, tap: 0)
+        scheduler.advance(by: 5)
+        XCTAssertFalse(hint, "a muted or paused app delivers zeros whatever the permission is")
+        XCTAssertEqual(system.captureAuthorizationChecks, 0)
+    }
+
+    func testMacOSIsNotAskedWhileSoundIsComingThroughOrTheSilenceIsShort() throws {
+        system.captureAuthorization = .denied
+        controller.start(EngineConfiguration(appBundleID: discord))
+        try feed(seconds: 0.2, tap: 0.3)
+        try feed(seconds: 1, tap: 0.3)
+        scheduler.advance(by: 3)
+        XCTAssertFalse(hint, "the tap carries sound, whatever an old answer says")
+        try feed(seconds: 2, tap: 0)
+        scheduler.advance(by: 1)
+        XCTAssertFalse(hint, "2 s of silence is a pause")
+        XCTAssertEqual(system.captureAuthorizationChecks, 0)
+    }
+
+    func testSilenceFromTheStartIsNotAHintWhenMacOSSaysAllowed() throws {
+        // A quiet call after a rebuild: the tap has not carried sound yet, but macOS says it may.
+        system.captureAuthorization = .authorized
+        controller.start(EngineConfiguration(appBundleID: discord))
+        try feed(seconds: 4, tap: 0)
+        scheduler.advance(by: 10)
+        XCTAssertFalse(hint)
+        XCTAssertGreaterThan(system.captureAuthorizationChecks, 0, "it did look")
+        XCTAssertEqual(system.createdTaps.count, 1, "and it did not rebuild for nothing")
+    }
+
+    func testSilenceFromTheStartIsAHintWhenMacOSSaysDeniedOrDoesNotSay() throws {
+        for answer in [CaptureAuthorization.denied, .unknown] {
+            system.captureAuthorization = answer
+            controller.start(EngineConfiguration(appBundleID: discord))
+            try feed(seconds: 4, tap: 0)
+            scheduler.advance(by: 0.5)
+            XCTAssertTrue(hint, "\(answer)")
+            controller.stop()
+        }
+    }
+
+    func testSwitchingThePermissionBackOnRebuildsOnceSoTheTapComesBack() throws {
+        system.captureAuthorization = .denied
+        controller.start(EngineConfiguration(appBundleID: discord))
+        try feed(seconds: 4, tap: 0)
+        scheduler.advance(by: 0.5)
+        XCTAssertTrue(hint)
+        let rebuilds = controller.status.rebuildCount
+        let taps = system.createdTaps.count
+
+        system.captureAuthorization = .authorized
+        scheduler.advance(by: EngineController.permissionCheckSeconds + EngineController.monitorInterval
+            + EngineController.debounceInterval + 0.1)
+        XCTAssertEqual(controller.status.rebuildCount, rebuilds + 1, "the tap made without permission is made again")
+        XCTAssertEqual(system.createdTaps.count, taps + 1)
+        XCTAssertFalse(hint)
+
+        // Silence on the new tap while macOS says allowed is a quiet app: no hint, no more rebuilds.
+        try feed(seconds: 4, tap: 0)
+        scheduler.advance(by: 10)
+        XCTAssertFalse(hint)
+        XCTAssertEqual(controller.status.rebuildCount, rebuilds + 1, "only once")
+    }
+
     func testDuetteNeverTapsItself() {
         // Duette launched by the app it taps: its own output must stay out of the tap.
         system.processList.append(AudioProcessInfo(objectID: 299, pid: 4242, bundleID: "", isRunningOutput: true))

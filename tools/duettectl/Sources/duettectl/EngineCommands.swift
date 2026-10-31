@@ -490,6 +490,12 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
         let hinted = waitUntil(EngineController.silenceHintSeconds + 3) { run.controller.status.appSilentWhilePlaying }
         r.check("denied.hint", hinted, "appSilentWhilePlaying \(run.controller.status.appSilentWhilePlaying)",
                 detail: "tap zero run \(run.engine.stats().tapZeroFrames) frames, tap had audio \(run.engine.stats().tapHadAudio)")
+        // The controller asks macOS (the private TCC preflight) before it trusts silence from a tap.
+        // This process was denied in TCC.db, so the real answer must be "denied", and it must
+        // reach the controller through PIDAudioSystem.
+        let preflight = run.system.systemAudioCaptureAuthorization()
+        r.check("denied.preflight", preflight == .denied, "\(preflight), raw answer \(run.system.systemAudioCaptureRawAnswer().map { String($0) } ?? "none")",
+                detail: "TCCAccessPreflight(kTCCServiceAudioCapture) for this process after the denial in TCC.db")
         r.engineStats(run)
         return
     }
@@ -499,6 +505,8 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     let stats = run.engine.stats()
     r.check("tap.audio", stats.tapHadAudio, "tap had audio \(stats.tapHadAudio)",
             detail: "tap zero run \(stats.tapZeroFrames) frames; zeros only would mean capture permission is denied")
+    r.info("preflight", "\(run.system.systemAudioCaptureAuthorization()), raw answer \(run.system.systemAudioCaptureRawAnswer().map { String($0) } ?? "none")",
+           detail: "TCCAccessPreflight(kTCCServiceAudioCapture) for this process while System Audio Recording is allowed in TCC.db")
     r.dropouts("mix.dropouts", mix)
     r.residual("residual", mix, tones: [toneHz, testMicHz])
     let meters = run.engine.meters()

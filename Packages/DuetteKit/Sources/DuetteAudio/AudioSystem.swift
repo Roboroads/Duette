@@ -22,6 +22,17 @@ public enum AudioSystemEvent: Equatable {
     case didWake
 }
 
+/// What macOS says about Duette's System Audio Recording permission. There is no public way to
+/// ask, so the real system may not know.
+public enum CaptureAuthorization: Equatable {
+    /// macOS says Duette may record other apps' sound.
+    case authorized
+    /// macOS says Duette may not (it was switched off in System Settings).
+    case denied
+    /// Not asked yet, or macOS gave no answer.
+    case unknown
+}
+
 /// A running IOProc, as returned by AudioSystem.startIO.
 public final class IOToken {
     public let device: AudioObjectID
@@ -90,6 +101,13 @@ public protocol AudioSystem: AnyObject {
     /// .overload. An empty set stops watching.
     func watch(devices: [AudioObjectID], aggregate: AudioObjectID?)
 
+    // Permission
+    /// What macOS says about System Audio Recording for Duette right now, or `.unknown`.
+    func systemAudioCaptureAuthorization() -> CaptureAuthorization
+    /// The number macOS answered with, as it came (0 allowed, 1 denied, 2 not asked yet), or nil
+    /// when it was not asked or could not answer. For diagnostics.
+    func systemAudioCaptureRawAnswer() -> Int32?
+
     // Measuring
     /// Plays a test chirp into the sink and records "Duette", both at `bufferFrameSize`
     /// (LoopbackProbe). Nothing else may write to the sink meanwhile. Blocks for about a second.
@@ -103,6 +121,12 @@ extension AudioSystem {
 
     /// Unknown by default, which skips grouping by responsible process.
     public func responsiblePID(of pid: pid_t) -> pid_t? { nil }
+
+    /// Unknown by default, which leaves the permission hint to the tap's own silence.
+    public func systemAudioCaptureAuthorization() -> CaptureAuthorization { .unknown }
+
+    /// No answer by default.
+    public func systemAudioCaptureRawAnswer() -> Int32? { nil }
 
     /// Not possible by default.
     public func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,

@@ -81,7 +81,7 @@ Open Terminal (press Command and Space, type Terminal, press Return), paste this
 sudo "/Library/Application Support/Duette/uninstall.sh"
 ```
 
-It asks for your password, quits Duette and removes the app and the part that adds the "Duette" microphone to your Mac. Sound pauses for a moment. Your Duette settings stay in `~/Library/Preferences`, so a later reinstall keeps them.
+It asks for your password, quits Duette, takes it out of your Login Items and removes the app and the part that adds the "Duette" microphone to your Mac. Sound pauses for a moment. Your Duette settings stay in `~/Library/Preferences`, so a later reinstall keeps them. If the script says it could not take Duette out of Login Items by itself, open System Settings > General > Login Items & Extensions and remove Duette there.
 
 ## Known limitations
 
@@ -162,8 +162,9 @@ sudo scripts/uninstall.sh
 | DuetteKit: engine IOProc with synthetic buffers, the state machine against a fake audio system | `scripts/ci/build-kit.sh` | macOS |
 | The app: model, settings, status line, onboarding, diagnostics | `scripts/ci/build-app.sh` | macOS |
 | duettectl: arguments, WAV files, the tone checker | `scripts/ci/build-cli.sh` | macOS |
-| Driver and engine against the real Core Audio, with test devices | `integration.yml`, which calls `scripts/ci/integration.sh` | CI only |
-| Ten-minute soak at 64 and 128 frames | `soak.yml` | CI only |
+| Driver and engine against the real Core Audio, with test devices, including "Measure latency" against the app's estimate | `integration.yml`, which calls `scripts/ci/integration.sh` | CI only |
+| Ten-minute soak at 64 and 128 frames, with test devices | `soak.yml` (nightly, by hand, or on a pull request labelled `soak`) | CI only; the runner is a virtual machine, so it may report "needs hands-on" |
+| Soak with a real microphone: about 22 minutes, 10 each at 128 and 64 frames, ending in `SOAK PASS`, `SOAK FAIL` or `SOAK INCONCLUSIVE` | `duettectl soak --hands-on`, step 2.11 of [docs/TESTING.md](docs/TESTING.md) | A real Mac with the installed pkg |
 | The installer: lint, a pkg from stand-in bundles, install, diagnose, uninstall | `packaging.yml` | CI only |
 | Everything that needs a person, a microphone and Discord | [docs/TESTING.md](docs/TESTING.md) | A real Mac |
 
@@ -173,10 +174,10 @@ sudo scripts/uninstall.sh
 
 - "Duette" is 48 kHz stereo only. Other apps convert to that on their own. The microphone is mixed down to mono and sent equally to the left and right side.
 - Volumes go up to 200% (+6 dB). Anything past full scale is hard-clipped. There are no effects.
-- macOS has no way to ask whether System Audio Recording was allowed. A denied tap delivers exact zeros, and the app calls it denied after more than 3 seconds of them while the shared app is playing and the tap has never carried sound.
+- macOS has no public way to ask whether System Audio Recording was allowed. A denied tap delivers exact zeros, but so does a call where nobody talks. So after more than 3 seconds of exact zeros while the shared app is playing, the app asks macOS's own privacy check (a private call, looked up at run time, macOS 14.4 and newer). "Denied" shows the red line at once, also if the permission is switched off while Duette runs. "Allowed" never does. Without an answer, the line shows only if the tap has never carried sound, so a permission switched off mid-call then shows up the next time the audio path is rebuilt.
 - Every rebuild of the audio path leaves a gap of a fraction of a second. The triggers are listed in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Nothing resamples except the drift compensation of the aggregate device. CI checks a tap at 44.1 kHz (`duettectl rate-mismatch`), not a microphone at another rate.
-- The delay is designed to be about 10 to 12 ms at 128 frames. The first measurements on a real Mac are part of the hands-on test in [docs/TESTING.md](docs/TESTING.md).
+- The delay is designed to be about 10 to 12 ms at 128 frames. "Measure latency" under "For experts" measures it with a test sound (apps listening to Duette hear a short silence and a soft chirp or two meanwhile). The first measurements on a real Mac are part of the hands-on test in [docs/TESTING.md](docs/TESTING.md).
 - arm64 only, not sandboxed, not on the App Store, no updater.
 
 ### Contributing and releasing

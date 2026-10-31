@@ -3,19 +3,31 @@
 #
 #   sudo "/Library/Application Support/Duette/uninstall.sh"
 #
-# Removes the app, the audio driver and the support folder, forgets the
-# installer receipts and restarts the audio system. Your Duette settings in
-# ~/Library/Preferences are left alone, so a later reinstall keeps them.
+# Takes Duette out of Login Items, removes the app, the audio driver and the
+# support folder, forgets the installer receipts and restarts the audio system.
+# Your Duette settings in ~/Library/Preferences are left alone, so a later
+# reinstall keeps them.
+#
+# The login item is the app's own: it registered itself for the person who
+# switched "Open Duette when I log in" on, and only the app can take it out.
+# So before the app is deleted it is run once, as the person at the console,
+# with --unregister-login-item. If that does not work, the uninstall carries on
+# and ends with a note on how to remove the entry by hand. Login items belong
+# to each user, so only that user's is removed; the last lines say so, and where
+# any other user removes theirs.
 #
 # This is the pkg's own copy. scripts/uninstall.sh (the dev-machine script)
-# does much the same for a locally built install; the two can be merged later.
+# runs it, so a locally built install is removed the same way.
 #
 # Runs on the bash 3.2 that ships with macOS.
 
 APP="/Applications/Duette.app"
+APP_BIN="$APP/Contents/MacOS/Duette"
 DRIVER="/Library/Audio/Plug-Ins/HAL/Duette.driver"
 SUPPORT="/Library/Application Support/Duette"
 APP_PATTERN='/Duette\.app/Contents/MacOS/'
+# Set to the user whose login item the app removed.
+LOGIN_ITEM_USER=""
 
 console_user() {
   local user
@@ -51,6 +63,57 @@ quit_app() {
   fi
 }
 
+# run_limited <seconds> <command...>: runs the command and gives up on it after
+# <seconds>, so a stuck app cannot hold the uninstall. Returns its exit status.
+run_limited() {
+  local limit="$1" pid ticks=0
+  shift
+  "$@" &
+  pid=$!
+  while /bin/kill -0 "$pid" 2> /dev/null; do
+    if [ "$ticks" -ge $((limit * 4)) ]; then
+      /bin/kill "$pid" > /dev/null 2>&1
+      /usr/bin/pkill -f "$APP_BIN --unregister-login-item" > /dev/null 2>&1
+      wait "$pid" 2> /dev/null
+      return 1
+    fi
+    /bin/sleep 0.25
+    ticks=$((ticks + 1))
+  done
+  wait "$pid"
+}
+
+# Asks the installed app to take itself out of Login Items, as the person at the
+# console and in their login session, which is where macOS keeps the entry.
+# The app says what it did. Succeeds when the entry is gone or never was there.
+unregister_login_item() {
+  local user uid
+  [ -x "$APP_BIN" ] || return 1
+  user="$(console_user)" || return 1
+  uid="$(/usr/bin/id -u "$user" 2> /dev/null)"
+  [ -n "$uid" ] || return 1
+  run_limited 20 /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" "$APP_BIN" --unregister-login-item || return 1
+  LOGIN_ITEM_USER="$user"
+}
+
+remove_login_item() {
+  if unregister_login_item; then
+    return 0
+  fi
+  echo "Could not take Duette out of Login Items by itself."
+  echo "If Duette is still listed, open System Settings > General > Login Items & Extensions and remove it there."
+}
+
+# Login Items belong to each user. Last thing before the end, so it is not missed:
+# whose entry is gone, and where anyone else's is.
+login_items_summary() {
+  if [ -n "$LOGIN_ITEM_USER" ]; then
+    echo "Login Items: Duette was removed for $LOGIN_ITEM_USER only. Every other user who switched on \"Open Duette when I log in\" removes it in System Settings > General > Login Items & Extensions."
+  else
+    echo "Login Items: in every user account that switched on \"Open Duette when I log in\", remove Duette in System Settings > General > Login Items & Extensions."
+  fi
+}
+
 remove_path() {
   if [ -e "$1" ]; then
     /bin/rm -rf "$1" && echo "Removed $1"
@@ -75,6 +138,8 @@ main() {
   fi
 
   quit_app
+  # While the app still exists: only the app can remove its own login item.
+  remove_login_item
   remove_path "$APP"
   remove_path "$DRIVER"
   remove_path "$SUPPORT"
@@ -82,6 +147,7 @@ main() {
 
   echo "Restarting the audio system."
   /usr/bin/killall coreaudiod > /dev/null 2>&1
+  login_items_summary
   echo "Duette is removed."
 }
 
