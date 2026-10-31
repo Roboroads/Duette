@@ -1,0 +1,100 @@
+# XcodeGen spec for the Duette menu bar app. scripts/ci/build-app.sh runs
+# `xcodegen generate --spec app/project.yml`; the generated Duette.xcodeproj is git-ignored.
+#
+# The version is stamped from the command line (MARKETING_VERSION from version.txt,
+# CURRENT_PROJECT_VERSION from the CI run number), not from this file.
+name: Duette
+
+options:
+  bundleIdPrefix: me.roboroads.duette
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.2"
+
+packages:
+  DuetteKit:
+    path: ../Packages/DuetteKit
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.2"
+    ARCHS: arm64
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "0"
+    # DuetteEngine is C++ behind a C header; make sure libc++ is linked.
+    OTHER_LDFLAGS: "$(inherited) -lc++"
+    # Ad-hoc by default. scripts/sign.sh re-signs the app with the Developer ID certificate and
+    # app/Duette/Duette.entitlements for releases.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+  configs:
+    Debug:
+      ENABLE_HARDENED_RUNTIME: NO
+    Release:
+      ENABLE_HARDENED_RUNTIME: YES
+      # Xcode would otherwise add get-task-allow, which notarization rejects.
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+
+targets:
+  Duette:
+    type: application
+    platform: macOS
+    sources:
+      - path: Duette
+        excludes:
+          - Info.plist
+          - Duette.entitlements
+    dependencies:
+      - package: DuetteKit
+        product: DuetteKit
+    settings:
+      base:
+        PRODUCT_NAME: Duette
+        PRODUCT_BUNDLE_IDENTIFIER: me.roboroads.duette
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Duette/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Duette/Duette.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        COMBINE_HIDPI_IMAGES: YES
+
+  # Unit tests of the app logic. The sources are compiled straight into the test bundle (without
+  # the @main file), so the tests run without launching the menu bar app.
+  DuetteTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: DuetteTests
+      - path: Duette
+        excludes:
+          - DuetteApp.swift
+          - Info.plist
+          - Duette.entitlements
+          - Assets.xcassets
+    dependencies:
+      - package: DuetteKit
+        product: DuetteKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.roboroads.duette.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Duette:
+    build:
+      targets:
+        Duette: all
+        DuetteTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - DuetteTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
