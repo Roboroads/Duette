@@ -66,6 +66,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || inputs.tag_name }}
+          # Full history and all branches and tags, to check where the commit lives.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Everything below runs this commit's scripts, some of them with the signing
+      # secrets. A commit from a fork's pull request can be fetched by its SHA, so only
+      # build commits that are reachable from a branch or tag of this repository.
+      - name: Refuse commits that are not on this repository
+        run: |
+          sha="$(git rev-parse HEAD)"
+          on_repo="$(git for-each-ref --contains "$sha" --count=1 --format='%(refname)' refs/remotes/origin refs/tags)"
+          if [ -z "$on_repo" ]; then
+            echo "::error::Commit $sha is not on any branch or tag of this repository, so it is not built with the signing secrets."
+            exit 1
+          fi
+          echo "Commit $sha is on $on_repo"
 
       - name: Toolchain versions
         run: |
