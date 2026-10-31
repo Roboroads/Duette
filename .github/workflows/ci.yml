@@ -66,6 +66,11 @@ jobs:
         if: hashFiles('scripts/ci/build-driver.sh') != ''
         run: bash scripts/ci/build-driver.sh
 
+      # Installs the plug-in on the runner, restarts coreaudiod, checks the devices, uninstalls.
+      - name: Install check (driver)
+        if: hashFiles('driver/tests/install_check.sh') != ''
+        run: bash driver/tests/install_check.sh
+
       - name: Build and test DuetteKit
         if: hashFiles('scripts/ci/build-kit.sh') != ''
         run: bash scripts/ci/build-kit.sh
