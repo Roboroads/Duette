@@ -69,10 +69,38 @@ extension HAL {
         guard status == kNoError else { throw CoreAudioError(status, "set the driver's self-test tone") }
     }
 
-    /// The processes recording "Duette", or nil if the driver is not there.
+    /// The processes recording "Duette" according to the driver ('dcli'), or nil if the driver is
+    /// not there. The HAL starts the plug-in's IO once for all readers of a device, so a process
+    /// that starts reading while another already does is missing here; see inputReaderPIDs.
     public static func driverInputClients() -> [pid_t]? {
         guard let duette = deviceID(forUID: DuetteDriver.deviceUID),
               let value = try? AudioObject(duette).getCFObject(DuetteDriver.inputClientsProperty) else { return nil }
         return DuetteDriver.decodeInputClients(value)
+    }
+
+    /// The processes whose HAL process object runs input IO on "Duette" (kAudioProcessPropertyDevices,
+    /// input scope), also through an aggregate whose subdevices this process may read.
+    public static func processesReadingDuette() -> [pid_t] {
+        guard let duette = deviceID(forUID: DuetteDriver.deviceUID) else { return [] }
+        var pids: [pid_t] = []
+        for object in (try? processObjectIDs()) ?? [] {
+            guard let info = processInfo(object), info.isRunningInput else { continue }
+            let devices = (try? AudioObject(object).getArray(kAudioProcessPropertyDevices, scope: kAudioObjectPropertyScopeInput,
+                                                             of: AudioObjectID.self)) ?? []
+            let reads = devices.contains { device in
+                if device == duette { return true }
+                let members = (try? AudioObject(device).getCFObject(kAudioAggregateDevicePropertyFullSubDeviceList)) as? [String]
+                return members?.contains(DuetteDriver.deviceUID) ?? false
+            }
+            if reads { pids.append(info.pid) }
+        }
+        return pids
+    }
+
+    /// Every process recording "Duette" that can be found: the driver's 'dcli' and the HAL's
+    /// process objects together. Nil if the driver is not there.
+    public static func inputReaderPIDs() -> [pid_t]? {
+        guard let clients = driverInputClients() else { return nil }
+        return Set(clients).union(processesReadingDuette()).sorted()
     }
 }

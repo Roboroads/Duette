@@ -1,0 +1,54 @@
+name: Integration
+
+# Headless checks of the driver and the engine against the real HAL of a macOS runner:
+# scripts/ci/integration.sh builds the driver with its CI test devices, grants the TCC
+# permissions, installs it, runs duettectl's commands and writes a pass/fail table to the job
+# summary.
+#
+# Every check is blocking: the runner can do all of them (taps included, once TCC allows System
+# Audio Recording before the first tap). What CI cannot reach (a real microphone, a real call app,
+# hot-plug, sleep and wake, the UI) is left to the hands-on checklist. The long soak is
+# soak.yml.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  integration:
+    name: integration (macOS)
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up (build, TCC, install the test-device driver)
+        run: bash scripts/ci/integration.sh setup
+
+      - name: Checks
+        run: bash scripts/ci/integration.sh blocking
+
+      - name: Summary
+        if: always()
+        run: bash scripts/ci/integration.sh summary
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: build/integration
+          if-no-files-found: ignore

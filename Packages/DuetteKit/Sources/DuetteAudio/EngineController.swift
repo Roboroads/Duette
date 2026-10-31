@@ -566,6 +566,9 @@ public final class EngineController {
 
     private func monitor() {
         meterHistory.record(engine.meters())
+        // A process that starts reading "Duette" while another already does changes neither 'dcli'
+        // nor the process list, so the loop check also runs here.
+        checkFeedbackLoop()
         let hint = captureLooksDenied()
         if hint != status.appSilentWhilePlaying {
             updateStatus { $0.appSilentWhilePlaying = hint }

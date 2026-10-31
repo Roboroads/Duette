@@ -1,0 +1,68 @@
+name: Soak
+
+# The engine with the test mic for 10 minutes, at 64 and 128 frames: no overloads, no dropouts.
+# See phase_soak in scripts/ci/integration.sh. It first counts overloads on the runner's own
+# devices; when the soak fails only where the HAL reported a late cycle and those devices overload
+# too, the row says "needs hands-on" and the job passes. Any other failure fails the job.
+#
+# Runs nightly, by hand, and on pull requests labelled "soak".
+
+on:
+  pull_request:
+    types: [labeled, synchronize]
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Soak length in minutes
+        default: '10'
+      buffers:
+        description: Buffer sizes in frames, comma separated
+        default: '64,128'
+
+concurrency:
+  group: soak-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  soak:
+    name: soak (macOS, ${{ matrix.buffer }} frames)
+    if: >-
+      github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'soak')
+    strategy:
+      fail-fast: false
+      matrix:
+        buffer: ${{ fromJSON(format('[{0}]', github.event.inputs.buffers || '64,128')) }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up (build, TCC, install the test-device driver)
+        run: bash scripts/ci/integration.sh setup
+
+      - name: Soak
+        env:
+          SOAK_MINUTES: ${{ github.event.inputs.minutes || '10' }}
+          SOAK_BUFFER: ${{ matrix.buffer }}
+        run: bash scripts/ci/integration.sh soak "$SOAK_MINUTES" "$SOAK_BUFFER"
+
+      - name: Summary
+        if: always()
+        run: bash scripts/ci/integration.sh summary
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-logs-${{ matrix.buffer }}
+          path: build/integration
+          if-no-files-found: ignore
