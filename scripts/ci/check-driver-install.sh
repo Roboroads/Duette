@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# CI install check for the HAL plug-in (macOS only). Run by the "Install check (driver)" step.
+#
+#  1. Install build/out/Duette.driver with scripts/install.sh (restarts coreaudiod).
+#  2. system_profiler lists "Duette" and not "Duette Sink".
+#  3. duette-driver-probe check: properties, custom properties, self-test tone, input clients,
+#     loopback through the sink, shared clock.
+#  4. Install build/test-out/Duette.driver: the test devices appear and behave.
+#  5. scripts/uninstall.sh removes it again.
+#
+# It uses only build-driver.sh's products in build/out/ and build/test-out/, and runs
+# build-driver.sh itself when they are missing, so it also works on a clean checkout.
+#
+# GitHub's macos-15 runners load an ad-hoc signed plug-in after `killall coreaudiod` (spike S3),
+# so a failure here is a real failure.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+repo_root=$(pwd)
+probe=$repo_root/build/test-out/duette-driver-probe
+
+for f in build/out/Duette.driver build/test-out/Duette.driver "$probe"; do
+  if [ ! -e "$f" ]; then
+    echo "==> $f is missing; building the driver first"
+    bash scripts/ci/build-driver.sh
+    break
+  fi
+done
+
+failed=0
+fail() {
+  echo "::error::$*"
+  failed=1
+}
+
+# The driver's log for the plug-in installed now. Run it before that plug-in is replaced or
+# removed: log show needs the binary to format the messages.
+phase_start=$(date '+%Y-%m-%d %H:%M:%S')
+phase_logged=no
+dump_log() { # label
+  phase_logged=yes
+  echo "::group::driver log: $1"
+  /usr/bin/log show --start "$phase_start" --info --debug \
+    --predicate 'subsystem == "me.roboroads.duette.driver" AND category == "driver"' 2>/dev/null |
+    tail -n 200 || true
+  echo "::endgroup::"
+}
+
+install_driver() { # bundle
+  phase_start=$(date '+%Y-%m-%d %H:%M:%S')
+  phase_logged=no
+  sudo bash scripts/install.sh --driver "$1" --no-app
+}
+
+cleanup() {
+  [ "$phase_logged" = yes ] || dump_log "at exit"
+  sudo bash "$repo_root/scripts/uninstall.sh" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+audio_devices() {
+  # Device names are the lines that end in a colon, indented 8 spaces, under "Devices:".
+  system_profiler SPAudioDataType 2>/dev/null | sed -n 's/^        \([^ ].*\):$/\1/p'
+}
+
+wait_for_device_name() { # name, seconds
+  local _ names
+  for _ in $(seq 1 "$2"); do
+    # Captured first: with pipefail, grep -q exiting early would fail the pipeline.
+    names=$(audio_devices)
+    if grep -Fxq "$1" <<<"$names"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+echo "::group::install build/out/Duette.driver"
+install_driver build/out/Duette.driver
+echo "::endgroup::"
+
+echo "::group::system_profiler SPAudioDataType"
+wait_for_device_name Duette 30 || true
+devices=$(audio_devices)
+echo "$devices"
+echo "::endgroup::"
+if grep -Fxq Duette <<<"$devices"; then
+  echo "PASS system_profiler lists Duette"
+else
+  fail "system_profiler does not list Duette"
+fi
+if grep -Fq 'Duette Sink' <<<"$devices"; then
+  fail "system_profiler lists Duette Sink, which should be hidden"
+else
+  echo "PASS system_profiler does not list Duette Sink"
+fi
+if grep -Fq 'Duette Test' <<<"$devices"; then
+  fail "the shippable plug-in publishes test devices"
+fi
+
+echo "::group::duette-driver-probe check"
+"$probe" check || fail "duette-driver-probe check failed"
+echo "::endgroup::"
+dump_log "shippable plug-in"
+
+echo "::group::install build/test-out/Duette.driver (test devices)"
+install_driver build/test-out/Duette.driver
+echo "::endgroup::"
+wait_for_device_name 'Duette Test Speaker' 30 || true
+devices=$(audio_devices)
+echo "$devices"
+for name in 'Duette Test Mic' 'Duette Test Speaker'; do
+  if grep -Fxq "$name" <<<"$devices"; then
+    echo "PASS system_profiler lists $name"
+  else
+    fail "system_profiler does not list $name"
+  fi
+done
+
+echo "::group::duette-driver-probe test-devices"
+"$probe" test-devices || fail "duette-driver-probe test-devices failed"
+echo "::endgroup::"
+dump_log "test-device plug-in"
+
+echo "::group::uninstall"
+sudo bash scripts/uninstall.sh
+"$probe" absent || fail "Duette is still published after uninstall.sh"
+echo "::endgroup::"
+
+if [ "$failed" -ne 0 ]; then
+  echo "install check failed"
+  exit 1
+fi
+echo "install check passed"
