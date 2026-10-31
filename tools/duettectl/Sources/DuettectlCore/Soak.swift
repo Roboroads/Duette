@@ -104,13 +104,18 @@ public struct SoakPlan: Equatable {
 
     /// `micLongestZeroRun`: the longest run of exact zeros in the mic's own recording around the
     /// same second, or nil if there is none to compare.
+    /// A run of exact zeros in "Duette" is a dropout unless the mic delivered a run at least half
+    /// as long itself (the engine's drift compensation smears the edges of a run a little).
     public static func classify(peak: Float, longestZeroRun: Int, micLongestZeroRun: Int? = nil) -> Window {
         if peak == 0 { return .silent }
-        return longestZeroRun >= dropoutFrames ? .dropout : .sound
+        guard longestZeroRun >= dropoutFrames else { return .sound }
+        if let mic = micLongestZeroRun, mic >= max(dropoutFrames, longestZeroRun / 2) { return .micZeros }
+        return .dropout
     }
 
+    /// Whether a second had enough sound for a gap in it to show.
     public static func hasSound(zeros: Int, frames: Int) -> Bool {
-        true
+        frames > 0 && Double(zeros) < silentShareLimit * Double(frames)
     }
 
     /// How many of `offsets` (seconds since the start) fall in each minute of a soak `minutes`
@@ -127,9 +132,19 @@ public struct SoakPlan: Equatable {
     // MARK: The result
 
     /// The one line a tester reads.
+    public static let keepSoundGoing = "Keep sound going near the microphone (play music or keep talking) and run it again."
+
+    /// The checks that say whether there was enough sound to test with.
+    static func isSoundCheck(_ check: Check) -> Bool {
+        check.name.hasSuffix("sound") || check.name.hasSuffix("signal")
+    }
+
     public func verdict(_ checks: [Check]) -> String {
         if let failed = checks.first(where: { $0.status == .fail }) {
             return "SOAK FAIL: \(failed.name): \(failed.value)"
+        }
+        if let quiet = checks.first(where: { $0.status == .skip && Self.isSoundCheck($0) }) {
+            return "SOAK INCONCLUSIVE: \(quiet.name): \(quiet.value). " + Self.keepSoundGoing
         }
         if !checks.contains(where: { $0.status == .pass }) {
             if let skipped = checks.first(where: { $0.status == .skip }) {
@@ -144,7 +159,9 @@ public struct SoakPlan: Equatable {
 
     /// 0 for PASS (or nothing to do here), 1 for FAIL, 2 for INCONCLUSIVE.
     public func exitStatus(_ checks: [Check]) -> Int32 {
-        checks.contains { $0.status == .fail } ? 1 : 0
+        if checks.contains(where: { $0.status == .fail }) { return 1 }
+        if checks.contains(where: { $0.status == .skip && Self.isSoundCheck($0) }) { return 2 }
+        return 0
     }
 
     /// The file to attach: the verdict first, then `header`, every check and `notes`.
