@@ -1,0 +1,47 @@
+#!/bin/sh
+# Runs as root after the files are in place ($3 is the target volume).
+# Restarts the audio system so it loads the new driver, then opens the app
+# for the person who is logged in. Never fails: a failing postinstall makes
+# the whole install look broken even though the files are there.
+
+APP="/Applications/Duette.app"
+DRIVER="/Library/Audio/Plug-Ins/HAL/Duette.driver"
+SUPPORT="/Library/Application Support/Duette"
+
+if [ -n "$3" ] && [ "$3" != "/" ]; then
+  echo "Target volume is $3, not the running system: skipping the audio restart and launch."
+  exit 0
+fi
+
+# Files laid down by the installer already belong to root; this makes it certain.
+if [ -d "$DRIVER" ]; then
+  /usr/sbin/chown -R root:wheel "$DRIVER"
+  /bin/chmod -R go-w "$DRIVER"
+else
+  echo "Warning: $DRIVER is missing after the install."
+fi
+if [ -d "$SUPPORT" ]; then
+  /usr/sbin/chown -R root:wheel "$SUPPORT"
+  /bin/chmod 755 "$SUPPORT"/*.sh 2> /dev/null
+fi
+
+# coreaudiod only looks for plug-ins when it starts; launchd restarts it at once.
+echo "Restarting coreaudiod."
+/usr/bin/killall coreaudiod > /dev/null 2>&1
+/bin/sleep 2
+
+user="$(/usr/bin/stat -f%Su /dev/console 2> /dev/null)"
+case "$user" in
+  '' | root | loginwindow)
+    echo "Nobody is logged in at the console: not opening the app."
+    ;;
+  *)
+    uid="$(/usr/bin/id -u "$user" 2> /dev/null)"
+    if [ -n "$uid" ] && [ -d "$APP" ]; then
+      echo "Opening Duette for $user."
+      /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" /usr/bin/open "$APP" > /dev/null 2>&1
+    fi
+    ;;
+esac
+
+exit 0
