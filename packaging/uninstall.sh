@@ -12,7 +12,9 @@
 # switched "Open Duette when I log in" on, and only the app can take it out.
 # So before the app is deleted it is run once, as the person at the console,
 # with --unregister-login-item. If that does not work, the uninstall carries on
-# and ends with a note on how to remove the entry by hand.
+# and ends with a note on how to remove the entry by hand. Login items belong
+# to each user, so only that user's is removed; the last lines say so, and where
+# any other user removes theirs.
 #
 # This is the pkg's own copy. scripts/uninstall.sh (the dev-machine script)
 # runs it, so a locally built install is removed the same way.
@@ -24,6 +26,8 @@ APP_BIN="$APP/Contents/MacOS/Duette"
 DRIVER="/Library/Audio/Plug-Ins/HAL/Duette.driver"
 SUPPORT="/Library/Application Support/Duette"
 APP_PATTERN='/Duette\.app/Contents/MacOS/'
+# Set to the user whose login item the app removed.
+LOGIN_ITEM_USER=""
 
 console_user() {
   local user
@@ -88,7 +92,8 @@ unregister_login_item() {
   user="$(console_user)" || return 1
   uid="$(/usr/bin/id -u "$user" 2> /dev/null)"
   [ -n "$uid" ] || return 1
-  run_limited 20 /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" "$APP_BIN" --unregister-login-item
+  run_limited 20 /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" "$APP_BIN" --unregister-login-item || return 1
+  LOGIN_ITEM_USER="$user"
 }
 
 remove_login_item() {
@@ -97,6 +102,16 @@ remove_login_item() {
   fi
   echo "Could not take Duette out of Login Items by itself."
   echo "If Duette is still listed, open System Settings > General > Login Items & Extensions and remove it there."
+}
+
+# Login Items belong to each user. Last thing before the end, so it is not missed:
+# whose entry is gone, and where anyone else's is.
+login_items_summary() {
+  if [ -n "$LOGIN_ITEM_USER" ]; then
+    echo "Login Items: Duette was removed for $LOGIN_ITEM_USER only. Every other user who switched on \"Open Duette when I log in\" removes it in System Settings > General > Login Items & Extensions."
+  else
+    echo "Login Items: in every user account that switched on \"Open Duette when I log in\", remove Duette in System Settings > General > Login Items & Extensions."
+  fi
 }
 
 remove_path() {
@@ -132,6 +147,7 @@ main() {
 
   echo "Restarting the audio system."
   /usr/bin/killall coreaudiod > /dev/null 2>&1
+  login_items_summary
   echo "Duette is removed."
 }
 
