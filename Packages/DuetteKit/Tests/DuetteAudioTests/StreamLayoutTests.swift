@@ -92,6 +92,25 @@ final class MixEngineTests: XCTestCase {
         XCTAssertFalse(engine.isRunning)
     }
 
+    func testGainsMutesToneAndCountersRoundTrip() {
+        let engine = MixEngine()
+        engine.setGain(1.5, for: .mic)
+        XCTAssertEqual(engine.gain(for: .mic), 1.5)
+        engine.setGain(9, for: .app)
+        XCTAssertEqual(engine.gain(for: .app), MixEngine.maxGain)
+        XCTAssertEqual(engine.gain(for: .output), 1)
+        engine.setMuted(true, for: .output)
+        XCTAssertTrue(engine.isMuted(.output))
+        XCTAssertFalse(engine.isMuted(.mic))
+        XCTAssertFalse(engine.testTone)
+        engine.testTone = true
+        XCTAssertTrue(engine.testTone)
+        XCTAssertEqual(engine.meters(), Meters())
+        XCTAssertEqual(engine.stats(), EngineStats())
+        engine.countOverload()
+        XCTAssertEqual(engine.stats().overloads, 1)
+    }
+
     func testStartOnAMissingDeviceThrowsTheHALError() throws {
         let engine = MixEngine()
         try engine.configure(EngineLayout(output: BufferRange(first: 0, count: 1), sampleRate: 48000))

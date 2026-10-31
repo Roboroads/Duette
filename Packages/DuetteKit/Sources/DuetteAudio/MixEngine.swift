@@ -22,6 +22,74 @@ public struct EngineLayout: Equatable, Codable {
     }
 }
 
+/// The engine's three gain stages.
+public enum MixSource: String, CaseIterable, Codable {
+    case app
+    case mic
+    case output
+
+    var raw: duette_source {
+        switch self {
+        case .app: return DUETTE_SOURCE_APP
+        case .mic: return DUETTE_SOURCE_MIC
+        case .output: return DUETTE_SOURCE_OUTPUT
+        }
+    }
+}
+
+/// Level of the latest IOProc cycle, linear (1.0 is full scale).
+public struct Level: Equatable, Codable {
+    public var peak: Float
+    public var rms: Float
+
+    public init(peak: Float = 0, rms: Float = 0) {
+        self.peak = peak
+        self.rms = rms
+    }
+
+    init(_ raw: duette_level) {
+        self.init(peak: raw.peak, rms: raw.rms)
+    }
+}
+
+public struct Meters: Equatable, Codable {
+    /// The app tap, before its gain.
+    public var app: Level
+    /// The mic, before its gain.
+    public var mic: Level
+    /// What goes to the sink.
+    public var output: Level
+
+    public init(app: Level = Level(), mic: Level = Level(), output: Level = Level()) {
+        self.app = app
+        self.mic = mic
+        self.output = output
+    }
+}
+
+/// Counters kept by the IOProc; see duette_stats in duette_engine.h.
+public struct EngineStats: Equatable, Codable {
+    public var cycles: UInt64 = 0
+    public var frames: UInt64 = 0
+    public var lastHostTime: UInt64 = 0
+    public var tapZeroFrames: UInt64 = 0
+    public var micZeroFrames: UInt64 = 0
+    public var layoutMismatches: UInt64 = 0
+    public var overloads: UInt64 = 0
+
+    public init() {}
+
+    init(_ raw: duette_stats) {
+        cycles = raw.cycles
+        frames = raw.frames
+        lastHostTime = raw.last_host_time
+        tapZeroFrames = raw.tap_zero_frames
+        micZeroFrames = raw.mic_zero_frames
+        layoutMismatches = raw.layout_mismatches
+        overloads = raw.overloads
+    }
+}
+
 public enum MixEngineError: Error, Equatable {
     /// configure was called while the IOProc is running.
     case running
@@ -73,6 +141,51 @@ public final class MixEngine {
     @discardableResult
     public func stop(on device: AudioObjectID, procID: AudioDeviceIOProcID) -> OSStatus {
         duette_engine_stop(handle, device, procID)
+    }
+
+    /// Gains go from 0 to this (+6 dB).
+    public static let maxGain: Float = 2
+
+    /// Sets the gain of one stage, limited to 0...maxGain. Any thread.
+    public func setGain(_ gain: Float, for source: MixSource) {
+        duette_engine_set_gain(handle, source.raw, gain)
+    }
+
+    public func gain(for source: MixSource) -> Float {
+        duette_engine_gain(handle, source.raw)
+    }
+
+    /// Mutes one stage, keeping its gain. Any thread.
+    public func setMuted(_ muted: Bool, for source: MixSource) {
+        duette_engine_set_mute(handle, source.raw, muted)
+    }
+
+    public func isMuted(_ source: MixSource) -> Bool {
+        duette_engine_muted(handle, source.raw)
+    }
+
+    /// The engine's own 440 Hz test tone in place of the mix.
+    public var testTone: Bool {
+        get { duette_engine_test_tone(handle) }
+        set { duette_engine_set_test_tone(handle, newValue) }
+    }
+
+    /// Levels of the latest cycle. Cheap; poll it from the UI.
+    public func meters() -> Meters {
+        var raw = duette_meters()
+        duette_engine_read_meters(handle, &raw)
+        return Meters(app: Level(raw.app), mic: Level(raw.mic), output: Level(raw.output))
+    }
+
+    public func stats() -> EngineStats {
+        var raw = duette_stats()
+        duette_engine_read_stats(handle, &raw)
+        return EngineStats(raw)
+    }
+
+    /// Counts one processor overload of the aggregate.
+    public func countOverload() {
+        duette_engine_count_overload(handle)
     }
 
     static func raw(_ range: BufferRange) -> duette_range {
