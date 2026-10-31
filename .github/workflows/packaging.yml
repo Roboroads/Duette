@@ -141,6 +141,70 @@ jobs:
           bash scripts/sign.sh import-certs
           bash scripts/sign.sh bundles
 
+      - name: Other ways to supply the certificates
+        env:
+          APPLE_TEAM_ID: TEST123456
+        run: |
+          ids="$RUNNER_TEMP/identities"
+          password="$(cat "$ids/password")"
+          check() { # <label>
+            local app installer
+            app="$(bash scripts/sign.sh identity app)"
+            installer="$(bash scripts/sign.sh identity installer)"
+            [[ "$app" =~ ^[0-9A-F]{40}$ ]] || { echo "::error::$1: no application identity"; exit 1; }
+            [ "$installer" = "Developer ID Installer: Duette CI Probe (TEST123456)" ] || { echo "::error::$1: installer identity is '$installer'"; exit 1; }
+            echo "$1: ok"
+          }
+          bash scripts/sign.sh cleanup
+
+          echo "--- One .p12 with both identities, no Installer secret"
+          MACOS_CERT_APP_P12_BASE64="$(cat "$ids/combined.p12.b64")" MACOS_CERT_PASSWORD="$password" \
+            bash scripts/sign.sh import-certs
+          check "combined only"
+          bash scripts/sign.sh cleanup
+
+          echo "--- The same .p12 in both secrets"
+          combined="$(cat "$ids/combined.p12.b64")"
+          MACOS_CERT_APP_P12_BASE64="$combined" MACOS_CERT_INSTALLER_P12_BASE64="$combined" MACOS_CERT_PASSWORD="$password" \
+            bash scripts/sign.sh import-certs
+          check "combined twice"
+          bash scripts/sign.sh cleanup
+
+          echo "--- Combined .p12 plus a separate Installer .p12 for the same key"
+          MACOS_CERT_APP_P12_BASE64="$combined" MACOS_CERT_INSTALLER_P12_BASE64="$(cat "$ids/installer.p12.b64")" MACOS_CERT_PASSWORD="$password" \
+            bash scripts/sign.sh import-certs
+          check "combined plus installer"
+          bash scripts/sign.sh cleanup
+
+          echo "--- Installer .p12 with its own password"
+          MACOS_CERT_APP_P12_BASE64="$(cat "$ids/application.p12.b64")" \
+            MACOS_CERT_INSTALLER_P12_BASE64="$(cat "$ids/installer-own-password.p12.b64")" \
+            MACOS_CERT_PASSWORD="$password" MACOS_CERT_INSTALLER_PASSWORD="$(cat "$ids/installer-password")" \
+            bash scripts/sign.sh import-certs
+          check "installer password"
+          bash scripts/sign.sh cleanup
+
+          echo "--- A wrong Installer password is refused"
+          if MACOS_CERT_APP_P12_BASE64="$(cat "$ids/application.p12.b64")" \
+            MACOS_CERT_INSTALLER_P12_BASE64="$(cat "$ids/installer-own-password.p12.b64")" \
+            MACOS_CERT_PASSWORD="$password" bash scripts/sign.sh import-certs; then
+            echo "::error::import-certs accepted the wrong Installer password"
+            exit 1
+          fi
+          bash scripts/sign.sh cleanup
+
+          echo "--- An Application-only .p12 is refused when the Installer is required"
+          if DUETTE_REQUIRE_INSTALLER=true MACOS_CERT_APP_P12_BASE64="$(cat "$ids/application.p12.b64")" MACOS_CERT_PASSWORD="$password" \
+            bash scripts/sign.sh import-certs; then
+            echo "::error::import-certs accepted an Application-only .p12 with DUETTE_REQUIRE_INSTALLER=true"
+            exit 1
+          fi
+          bash scripts/sign.sh cleanup
+
+          echo "--- Back to the standard certificates for the steps below"
+          MACOS_CERT_APP_P12_BASE64="$(cat "$ids/application.p12.b64")" MACOS_CERT_INSTALLER_P12_BASE64="$(cat "$ids/installer.p12.b64")" MACOS_CERT_PASSWORD="$password" \
+            bash scripts/sign.sh import-certs
+
       - name: Identities are found the way build-pkg.sh needs them
         env:
           APPLE_TEAM_ID: TEST123456
@@ -192,6 +256,7 @@ jobs:
           MACOS_CERT_APP_P12_BASE64: ${{ secrets.MACOS_CERT_APP_P12_BASE64 }}
           MACOS_CERT_INSTALLER_P12_BASE64: ${{ secrets.MACOS_CERT_INSTALLER_P12_BASE64 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_CERT_INSTALLER_PASSWORD: ${{ secrets.MACOS_CERT_INSTALLER_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/sign.sh import-certs
 
@@ -219,7 +284,7 @@ jobs:
 
       - name: Check the result
         env:
-          HAVE_SECRETS: ${{ secrets.MACOS_CERT_APP_P12_BASE64 != '' && secrets.MACOS_CERT_INSTALLER_P12_BASE64 != '' && secrets.ASC_KEY_P8_BASE64 != '' }}
+          HAVE_SECRETS: ${{ secrets.MACOS_CERT_APP_P12_BASE64 != '' && secrets.ASC_KEY_P8_BASE64 != '' }}
           SIGNED: ${{ steps.pkg.outputs.signed }}
           NOTARIZED: ${{ steps.notarize.outputs.notarized }}
         run: |

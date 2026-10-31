@@ -15,8 +15,12 @@
 #
 # Inputs (all optional; without them everything falls back to ad-hoc signing):
 #   MACOS_CERT_APP_P12_BASE64        base64 of the Developer ID Application .p12
-#   MACOS_CERT_INSTALLER_P12_BASE64  base64 of the Developer ID Installer .p12
-#   MACOS_CERT_PASSWORD              password of both .p12 files
+#   MACOS_CERT_INSTALLER_P12_BASE64  base64 of the Developer ID Installer .p12. May be
+#                                    empty when the Application .p12 also holds the
+#                                    Installer identity.
+#   MACOS_CERT_PASSWORD              password of the Application .p12 (and of the
+#                                    Installer .p12 unless the next one is set)
+#   MACOS_CERT_INSTALLER_PASSWORD    password of the Installer .p12, if it differs
 #   APPLE_TEAM_ID                    if set, only identities of this team are used
 #   DUETTE_APP_IDENTITY              use this codesign identity instead of searching
 #   DUETTE_INSTALLER_IDENTITY        use this productbuild identity (a common name)
@@ -26,6 +30,8 @@
 #                                    build fails unless it exists, sets
 #                                    com.apple.security.device.audio-input and has no
 #                                    com.apple.security.get-task-allow.
+#   DUETTE_REQUIRE_INSTALLER         "true": fail instead of warning when the Application
+#                                    .p12 is given but no Installer identity can be found
 #   DUETTE_OUT_DIR                   where the products are (default build/out)
 #   DUETTE_KEYCHAIN                  path of the temporary keychain
 #
@@ -86,6 +92,25 @@ installer_identity() {
   fi
 }
 
+# import_p12 <file> <password> <tool>...: import into the temporary keychain, letting
+# each <tool> use the keys. An "already exists" answer is fine: it means an earlier
+# import brought the same key or certificate (a .p12 with both identities, or two
+# .p12 files that share a private key). The identity checks afterwards catch a
+# .p12 that really failed.
+import_p12() {
+  local file="$1" password="$2" args=() tool output
+  shift 2
+  for tool in "$@"; do args+=(-T "$tool"); done
+  if output="$(security import "$file" -f pkcs12 -k "$KEYCHAIN_FILE" -P "$password" "${args[@]}" 2>&1)"; then
+    [ -z "$output" ] || echo "$output"
+  elif grep -qi 'already exists' <<< "$output"; then
+    echo "Part of $(basename "$file") is already in the keychain, which is fine."
+  else
+    echo "$output" >&2
+    die "could not import $(basename "$file"). A wrong password or a .p12 made by OpenSSL 3 without -legacy gives this error."
+  fi
+}
+
 b64_to_file() { # <base64 text> <file>
   printf '%s' "$1" | base64 --decode > "$2"
 }
@@ -110,15 +135,22 @@ cmd_import_certs() {
   security set-keychain-settings -lut 21600 "$KEYCHAIN_FILE"
   security unlock-keychain -p "$keychain_password" "$KEYCHAIN_FILE"
 
+  local installer_password="${MACOS_CERT_INSTALLER_PASSWORD:-$MACOS_CERT_PASSWORD}"
   if [ -n "${MACOS_CERT_APP_P12_BASE64:-}" ]; then
     b64_to_file "$MACOS_CERT_APP_P12_BASE64" "$work/app.p12"
-    security import "$work/app.p12" -f pkcs12 -k "$KEYCHAIN_FILE" -P "$MACOS_CERT_PASSWORD" \
-      -T /usr/bin/codesign -T /usr/bin/security
+    # The Application .p12 may carry the Installer identity too, so productbuild
+    # gets access to its keys as well.
+    import_p12 "$work/app.p12" "$MACOS_CERT_PASSWORD" \
+      /usr/bin/codesign /usr/bin/productbuild /usr/bin/productsign /usr/bin/security
   fi
   if [ -n "${MACOS_CERT_INSTALLER_P12_BASE64:-}" ]; then
-    b64_to_file "$MACOS_CERT_INSTALLER_P12_BASE64" "$work/installer.p12"
-    security import "$work/installer.p12" -f pkcs12 -k "$KEYCHAIN_FILE" -P "$MACOS_CERT_PASSWORD" \
-      -T /usr/bin/productbuild -T /usr/bin/productsign -T /usr/bin/security
+    if [ "${MACOS_CERT_INSTALLER_P12_BASE64:-}" = "${MACOS_CERT_APP_P12_BASE64:-}" ]; then
+      echo "The Installer .p12 is the same file as the Application .p12. Importing it once."
+    else
+      b64_to_file "$MACOS_CERT_INSTALLER_P12_BASE64" "$work/installer.p12"
+      import_p12 "$work/installer.p12" "$installer_password" \
+        /usr/bin/productbuild /usr/bin/productsign /usr/bin/security
+    fi
   fi
 
   # Lets codesign and productbuild use the private keys without a prompt.
@@ -144,6 +176,16 @@ cmd_import_certs() {
   fi
   if [ -n "${MACOS_CERT_INSTALLER_P12_BASE64:-}" ] && [ -z "$(installer_identity)" ]; then
     die "no 'Developer ID Installer' identity found after the import. Check the Installer .p12 and APPLE_TEAM_ID."
+  fi
+  if [ -z "${MACOS_CERT_INSTALLER_P12_BASE64:-}" ] && [ -z "$(installer_identity)" ]; then
+    local msg="no 'Developer ID Installer' identity in the Application .p12 and no Installer .p12 given, so the pkg would be unsigned."
+    if [ "${DUETTE_REQUIRE_INSTALLER:-}" = "true" ]; then
+      die "$msg Set MACOS_CERT_INSTALLER_P12_BASE64 or put the Installer certificate in the Application .p12 (docs/SIGNING.md)."
+    elif [ -n "${GITHUB_ACTIONS:-}" ]; then
+      echo "::warning::$msg"
+    else
+      echo "Note: $msg"
+    fi
   fi
 }
 
