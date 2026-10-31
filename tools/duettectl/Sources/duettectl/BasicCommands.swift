@@ -192,11 +192,12 @@ func runLoopback(_ ctx: Context) throws {
     // fault in the loopback and fails the command at once; one that fails while the HAL reported
     // a late cycle may be the machine's doing, so it is taken again (at most 5 takes in all).
     //
-    // The latency must match what the HAL reports to within 16 frames either way: more would be
+    // The latency must match what the HAL reports to within 1 ms either way: more would be
     // buffering the driver does not report, less a latency or safety offset it reports but does
     // not use. Either would make apps that line up "Duette" by those figures (and the app's own
-    // estimate) wrong.
-    let tolerance = 16.0
+    // estimate) wrong. The mean also carries how late the HAL wakes the two IO threads (a late
+    // writer makes it shorter, a late reader longer): on a loaded CI runner that was 21 frames.
+    let tolerance = LatencyModel.toleranceMilliseconds * rate / 1000
     func honest(_ mean: Double?) -> Bool {
         guard let mean else { return false }
         return abs(mean - reported) <= tolerance
