@@ -416,8 +416,12 @@ final class Player {
 extension Reporter {
     /// Checks one recording for the expected tones; one check per expectation.
     @discardableResult
+    ///
+    /// `damaged`: late cycles left gaps in this window. Their clicks spread the other tones around,
+    /// so an absent tone cannot be judged at -90 dBFS there; it is skipped (the exact-zero checks
+    /// cover the mutes).
     func tones(_ name: String, _ samples: [Float], sampleRate: Double = Device.sampleRate,
-               expect: [ToneExpectation]) -> Bool {
+               expect: [ToneExpectation], damaged: Bool = false) -> Bool {
         let results = ToneChecker.check(samples, sampleRate: sampleRate, expect: expect)
         let stats = SignalStats(samples)
         var all = true
@@ -425,6 +429,10 @@ extension Reporter {
             let label = String(format: "%.0fhz", result.expectation.frequency)
             let value = result.measured.map { $0.description } ?? "no tone"
             let detail = "want \(result.expectation); \(samples.count) frames, peak \(Format.db(stats.peakDBFS))"
+            if damaged, case .below = result.expectation.level {
+                skip("\(name).\(label)", value, detail: detail + "; not judged: every take of this window had a late cycle")
+                continue
+            }
             all = check("\(name).\(label)", result.passed, value, detail: detail) && all
         }
         if let spectrum = Spectrum(samples: samples, sampleRate: sampleRate) {

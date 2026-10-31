@@ -192,6 +192,13 @@ func runLoopback(_ ctx: Context) throws {
     // fault in the loopback and fails the command at once; one that fails while the HAL reported
     // a late cycle may be the machine's doing, so it is taken again (at most 5 takes in all).
     let limit = reported + 16
+    // The 1 kHz tone the writer plays after the chirp, as recorded.
+    func tail(_ take: Take) -> [Float]? {
+        guard let index = take.result?.chirpRecordingIndex else { return nil }
+        let start = max(0, Int(index - Int64(take.first)) + chirpFrames + 2400)
+        let end = min(take.recording.count, start + Int(min(1.0, max(0.25, tailSeconds - 0.2)) * rate))
+        return end > start ? Array(take.recording[start..<end]) : nil
+    }
     func problems(_ take: Take) -> [String] {
         guard let result = take.result else { return ["nothing to analyse"] }
         var found: [String] = []
@@ -203,6 +210,10 @@ func runLoopback(_ ctx: Context) throws {
         let silent = result.silenceDelay.map { $0 <= Double(buffer) } ?? false
         if !silent || result.nonZeroAfterStop != 0 || result.observedAfterStop < Double(4 * Int(buffer)) {
             found.append("not silent after the writer stopped")
+        }
+        let tone = tail(take).map { ToneChecker.check($0, sampleRate: rate, expect: [.at(testMicHz, -6.0206)]) }
+        if !(tone?.allSatisfy(\.passed) ?? false) {
+            found.append("tone after the chirp: \(tone?.first?.description ?? "not recorded")")
         }
         return found
     }
@@ -230,7 +241,6 @@ func runLoopback(_ ctx: Context) throws {
     let writer = chosen.writer
     let reader = chosen.reader
     let recording = chosen.recording
-    let first = chosen.first
     r.info("cycles", "writer \(writer.count) of \(writer.first?.frames ?? 0) frames, reader \(reader.count) of \(reader.first?.frames ?? 0) frames")
     guard let result = chosen.result else {
         r.check("analysis", false, "nothing to analyse", detail: "writer \(writer.count) cycles, reader \(reader.count), \(recording.count) frames")
@@ -259,12 +269,10 @@ func runLoopback(_ ctx: Context) throws {
     }
 
     // The tone after the chirp came through at its level.
-    if let index = result.chirpRecordingIndex {
-        let tailStart = max(0, Int(index - Int64(first)) + chirpFrames + 2400)
-        let tailEnd = min(recording.count, tailStart + Int(min(1.0, max(0.25, tailSeconds - 0.2)) * rate))
-        if tailEnd > tailStart {
-            r.tones("tone", Array(recording[tailStart..<tailEnd]), expect: [.at(testMicHz, -6.0206)])
-        }
+    if let tone = tail(chosen) {
+        r.tones("tone", tone, expect: [.at(testMicHz, -6.0206)])
+    } else {
+        r.check("tone.1000hz", false, "not recorded")
     }
 
     if let delay = result.silenceDelay {

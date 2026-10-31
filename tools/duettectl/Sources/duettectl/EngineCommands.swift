@@ -130,8 +130,11 @@ enum WindowLog {
     private(set) static var retaken = 0
     private(set) static var neverClean = 0
     private(set) static var attempts = 0
+    /// Whether the latest window was clean.
+    private(set) static var lastClean = true
 
     static func record(attempts used: Int, clean: Bool) {
+        lastClean = clean
         windows += 1
         attempts += used
         if used > 1 { retaken += 1 }
@@ -145,7 +148,7 @@ extension Recorder {
     /// in Reporter.engineStats). Only for windows that should never be silent: a level measured
     /// over a dropout reads low.
     func cleanTake(seconds: Double, settle: Double = 0.2, overloads: OverloadLog, channel: Int = 0,
-                   attempts: Int = 5) -> [Float] {
+                   attempts: Int = 8) -> [Float] {
         var best: (samples: [Float], damage: Int)?
         for attempt in 1...attempts {
             let before = overloads.total
@@ -201,7 +204,7 @@ extension Reporter {
         // takes, and its levels are then measured on the least damaged one.
         if WindowLog.windows > 0 {
             info("windows.clean", "\(WindowLog.windows - WindowLog.neverClean) of \(WindowLog.windows) clean",
-                 detail: "\(WindowLog.retaken) needed a retake, \(WindowLog.attempts) takes in all; a window with an overload or a dropout is taken again, at most 5 times")
+                 detail: "\(WindowLog.retaken) needed a retake, \(WindowLog.attempts) takes in all; a window with an overload or a dropout is taken again, at most 8 times")
         }
     }
 
@@ -299,7 +302,7 @@ func runVerifyMic(_ ctx: Context) throws {
     // M2: the test mic's 1 kHz (on a clock 200 ppm fast) arrives at its level, resampled to the
     // sink's clock by the aggregate's drift compensation.
     let plain = recorder.cleanTake(seconds: 2, settle: 0.5, overloads: run.overloads)
-    r.tones("mic", plain, expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
+    r.tones("mic", plain, expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)], damaged: !WindowLog.lastClean)
     r.residual("mic.residual", plain, tones: [testMicHz])
     let right = recorder.cleanTake(seconds: 1, overloads: run.overloads, channel: 1)
     r.tones("mic.right", right, expect: [.at(testMicHz, dbfsMinus12)])
@@ -325,9 +328,9 @@ func runVerifyMic(_ ctx: Context) throws {
 
     // The engine's own test tone replaces the mix.
     run.engine.testTone = true
-    r.tones("engine-tone", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(toneHz, dbfsMinus12), .absent(testMicHz, below: absentDBFS)])
+    r.tones("engine-tone", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(toneHz, dbfsMinus12), .absent(testMicHz, below: absentDBFS)], damaged: !WindowLog.lastClean)
     run.engine.testTone = false
-    r.tones("after-tone", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
+    r.tones("after-tone", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)], damaged: !WindowLog.lastClean)
     r.engineStats(run)
 }
 
@@ -479,7 +482,7 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     if expectDenied {
         // With System Audio Recording denied, the tap is expected to give exact silence, and the
         // controller to say so after EngineController.silenceHintSeconds.
-        r.tones("denied", mix, expect: [.absent(toneHz, below: absentDBFS), .at(testMicHz, dbfsMinus12)])
+        r.tones("denied", mix, expect: [.absent(toneHz, below: absentDBFS), .at(testMicHz, dbfsMinus12)], damaged: !WindowLog.lastClean)
         let denied = run.engine.stats()
         let frames = Double(denied.tapZeroFrames) / Device.sampleRate
         r.check("denied.tap-zeros", !denied.tapHadAudio && frames > 2, String(format: "%.1f s of exact zeros", frames),
@@ -507,11 +510,19 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
             expect: [.at(toneHz, dbfsMinus12 - 6.0206), .at(testMicHz, dbfsMinus12)])
     run.engine.setMuted(true, for: .mic)
     r.tones("mic-muted", recorder.cleanTake(seconds: 1, overloads: run.overloads),
-            expect: [.at(toneHz, dbfsMinus12 - 6.0206), .absent(testMicHz, below: absentDBFS)])
+            expect: [.at(toneHz, dbfsMinus12 - 6.0206), .absent(testMicHz, below: absentDBFS)], damaged: !WindowLog.lastClean)
     run.engine.setMuted(false, for: .mic)
     run.engine.setMuted(true, for: .app)
     r.tones("app-muted", recorder.cleanTake(seconds: 1, overloads: run.overloads),
-            expect: [.absent(toneHz, below: absentDBFS), .at(testMicHz, dbfsMinus12)])
+            expect: [.absent(toneHz, below: absentDBFS), .at(testMicHz, dbfsMinus12)], damaged: !WindowLog.lastClean)
+    // Both muted: exact zeros, so neither mute lets anything through. A late cycle only adds
+    // zeros, so this holds on any machine.
+    run.engine.setMuted(true, for: .mic)
+    let both = recorder.take(seconds: 1, settle: 0.2)
+    let bothStats = SignalStats(both)
+    r.check("both-muted.silence", !both.isEmpty && bothStats.peak == 0, String(format: "peak %.6f", bothStats.peak),
+            detail: "app and mic muted: \(both.count) frames of exact zeros")
+    run.engine.setMuted(false, for: .mic)
     run.engine.setMuted(false, for: .app)
     run.engine.setGain(1, for: .app)
     r.check("no-silence-hint", !run.controller.status.appSilentWhilePlaying, "appSilentWhilePlaying \(run.controller.status.appSilentWhilePlaying)")

@@ -228,7 +228,7 @@ phase_blocking() {
   run_cmd blocking engine 60 "duette.1000hz overloads" -- engine --mic test-mic --seconds 3 --expect '1000@-12' || failed=1
   run_cmd blocking verify-mic 150 "mic.1000hz mic.residual mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz windows.clean overloads" -- verify-mic || failed=1
   # M3 and M4: a process tap mixed with the mic, at 48 kHz and at 44.1 kHz.
-  run_cmd blocking verify-mix 150 "mix.440hz mix.1000hz residual app-gain-0.5.440hz mic-muted.1000hz app-muted.440hz windows.clean overloads" -- verify-mix || failed=1
+  run_cmd blocking verify-mix 150 "mix.440hz mix.1000hz residual app-gain-0.5.440hz mic-muted.1000hz app-muted.440hz both-muted.silence windows.clean overloads" -- verify-mix || failed=1
   run_cmd blocking rate-mismatch 150 "tap mix.440hz mix.1000hz residual app-muted.440hz windows.clean" -- rate-mismatch || failed=1
   # 'dcli' and the feedback-loop warning: readers that read directly, two at once, through an
   # aggregate or through VPIO.
