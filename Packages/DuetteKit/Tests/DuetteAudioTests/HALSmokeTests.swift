@@ -116,6 +116,28 @@ final class HALSmokeTests: XCTestCase {
         controller.stop()
     }
 
+    /// Runs only where the driver is installed (a dev Mac, or a CI job that installs it): the
+    /// hidden "Duette Sink" as the aggregate's main subdevice, with the IOProc running on it.
+    func testHiddenSinkAsMainSubdeviceRunsTheEngine() throws {
+        guard HAL.deviceID(forUID: DuetteDriver.sinkUID) != nil else {
+            throw XCTSkip("the Duette driver is not installed here")
+        }
+        let controller = EngineController(audioSystem: CoreAudioSystem())
+        let running = expectation(description: "running")
+        running.assertForOverFulfill = false
+        controller.onStatusChange = { status in
+            if case .running = status.state { running.fulfill() }
+        }
+        // No mic and no app: the aggregate holds only the sink, so no permission prompt can block.
+        controller.start(EngineConfiguration(mic: .device(uid: "me.roboroads.duette.no-such-mic")))
+        wait(for: [running], timeout: 10)
+        let before = controller.engine.stats().cycles
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertGreaterThan(controller.engine.stats().cycles, before, "the IOProc runs on the aggregate")
+        print("HAL hidden sink as main subdevice: \(controller.status)")
+        controller.stop()
+    }
+
     // MARK: - Helpers
 
     /// A real output device to stand in for the sink, and an input device for the mic if any.

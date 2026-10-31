@@ -1,0 +1,272 @@
+import CoreAudio
+import Darwin
+import Foundation
+
+/// Meter readings over time, so diagnostics can show the range of the last minute.
+public final class MeterHistory {
+    /// Two minutes at the controller's monitor interval.
+    public static let capacity = 240
+
+    private struct Sample {
+        let time: Date
+        let meters: Meters
+    }
+
+    private let lock = NSLock()
+    private var samples: [Sample] = []
+
+    public init() {}
+
+    public func record(_ meters: Meters, at time: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+        samples.append(Sample(time: time, meters: meters))
+        if samples.count > Self.capacity { samples.removeFirst(samples.count - Self.capacity) }
+    }
+
+    /// Minimum and maximum of every level over the last `window` seconds.
+    public func summary(window: TimeInterval = 60, now: Date = Date()) -> MeterSummary {
+        lock.lock()
+        let recent = samples.filter { now.timeIntervalSince($0.time) <= window }.map { $0.meters }
+        lock.unlock()
+        return MeterSummary(recent)
+    }
+}
+
+public struct LevelRange: Codable, Equatable {
+    public var minPeak: Float
+    public var maxPeak: Float
+    public var minRMS: Float
+    public var maxRMS: Float
+
+    init?(_ levels: [Level]) {
+        guard let first = levels.first else { return nil }
+        minPeak = first.peak
+        maxPeak = first.peak
+        minRMS = first.rms
+        maxRMS = first.rms
+        for level in levels.dropFirst() {
+            minPeak = min(minPeak, level.peak)
+            maxPeak = max(maxPeak, level.peak)
+            minRMS = min(minRMS, level.rms)
+            maxRMS = max(maxRMS, level.rms)
+        }
+    }
+}
+
+public struct MeterSummary: Codable, Equatable {
+    public var samples: Int
+    public var app: LevelRange?
+    public var mic: LevelRange?
+    public var output: LevelRange?
+
+    init(_ meters: [Meters]) {
+        samples = meters.count
+        app = LevelRange(meters.map { $0.app })
+        mic = LevelRange(meters.map { $0.mic })
+        output = LevelRange(meters.map { $0.output })
+    }
+}
+
+/// The timing properties of a device, in frames.
+public struct DeviceTiming: Codable, Equatable {
+    public var bufferFrameSize: UInt32?
+    public var inputLatency: UInt32?
+    public var outputLatency: UInt32?
+    public var inputSafetyOffset: UInt32?
+    public var outputSafetyOffset: UInt32?
+
+    public init(bufferFrameSize: UInt32? = nil, inputLatency: UInt32? = nil, outputLatency: UInt32? = nil,
+                inputSafetyOffset: UInt32? = nil, outputSafetyOffset: UInt32? = nil) {
+        self.bufferFrameSize = bufferFrameSize
+        self.inputLatency = inputLatency
+        self.outputLatency = outputLatency
+        self.inputSafetyOffset = inputSafetyOffset
+        self.outputSafetyOffset = outputSafetyOffset
+    }
+
+    /// Reads the device's buffer size, latencies and safety offsets from the HAL.
+    public static func read(_ device: AudioObjectID) -> DeviceTiming {
+        let object = AudioObject(device)
+        func value(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope) -> UInt32? {
+            try? object.get(selector, scope: scope, as: UInt32.self)
+        }
+        return DeviceTiming(
+            bufferFrameSize: value(kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal),
+            inputLatency: value(kAudioDevicePropertyLatency, kAudioObjectPropertyScopeInput),
+            outputLatency: value(kAudioDevicePropertyLatency, kAudioObjectPropertyScopeOutput),
+            inputSafetyOffset: value(kAudioDevicePropertySafetyOffset, kAudioObjectPropertyScopeInput),
+            outputSafetyOffset: value(kAudioDevicePropertySafetyOffset, kAudioObjectPropertyScopeOutput))
+    }
+}
+
+public struct LatencyEstimate: Codable, Equatable {
+    public var frames: UInt32
+    public var milliseconds: Double
+}
+
+public enum LatencyModel {
+    /// The latency Duette adds, estimated from the HAL's own figures: the aggregate's input side
+    /// (one buffer, the input latency, which includes the mic's, and the safety offset), its output
+    /// side into the sink (one buffer, latency, safety offset), and the read from "Duette" (one
+    /// buffer of the reader, latency, safety offset). The drift-compensation resampler is not in
+    /// any HAL property and is left out; S9 calibrates this against a loopback measurement.
+    public static func estimate(aggregate: DeviceTiming, duette: DeviceTiming?, sampleRate: Double) -> LatencyEstimate {
+        let buffer = aggregate.bufferFrameSize ?? 0
+        var frames = buffer * 2
+        frames += (aggregate.inputLatency ?? 0) + (aggregate.inputSafetyOffset ?? 0)
+        frames += (aggregate.outputLatency ?? 0) + (aggregate.outputSafetyOffset ?? 0)
+        if let duette {
+            frames += (duette.bufferFrameSize ?? buffer) + (duette.inputLatency ?? 0) + (duette.inputSafetyOffset ?? 0)
+        }
+        let rate = sampleRate > 0 ? sampleRate : 48000
+        return LatencyEstimate(frames: frames, milliseconds: Double(frames) * 1000 / rate)
+    }
+}
+
+/// Everything "Export Diagnostics..." writes into diagnostics.json.
+public struct DiagnosticsReport: Codable {
+    public struct Software: Codable {
+        public var appVersion: String?
+        public var driverVersion: String?
+        public var macOS: String
+        public var hardwareModel: String
+        public var processID: pid_t
+    }
+
+    public struct Device: Codable {
+        public var info: AudioDeviceInfo
+        public var timing: DeviceTiming
+    }
+
+    public struct Driver: Codable {
+        public var installed: Bool
+        public var deviceID: AudioObjectID?
+        public var sinkID: AudioObjectID?
+        public var selfTestTone: Bool?
+        /// 'dcli': the processes recording "Duette".
+        public var inputClients: [pid_t]?
+        public var deviceTiming: DeviceTiming?
+        public var sinkTiming: DeviceTiming?
+    }
+
+    public struct Engine: Codable {
+        public var status: EngineStatus
+        public var stats: EngineStats
+        public var gains: [String: Float]
+        public var mutes: [String: Bool]
+        public var testTone: Bool
+        public var aggregateTiming: DeviceTiming?
+        public var estimatedLatency: LatencyEstimate?
+        public var measuredLatencyMilliseconds: Double?
+        /// Meter range over the last 60 seconds.
+        public var meters: MeterSummary
+    }
+
+    public var generatedAt: Date
+    public var software: Software
+    /// Filled in by the app (microphone, system audio recording), which owns those APIs.
+    public var permissions: [String: String]
+    public var devices: [Device]
+    public var driver: Driver
+    public var selectedApp: String?
+    public var selectedAppProcesses: [AudioProcessInfo]
+    public var engine: Engine?
+    /// Results of the last self-tests, as the app recorded them.
+    public var selfTests: [String: String]
+}
+
+/// Gathers a DiagnosticsReport from the audio system and the engine controller.
+public final class DiagnosticsCollector {
+    public let audioSystem: AudioSystem
+    public let controller: EngineController?
+    private let timing: (AudioObjectID) -> DeviceTiming
+    private let selfTestTone: () -> Bool?
+
+    public init(audioSystem: AudioSystem, controller: EngineController?,
+                timing: @escaping (AudioObjectID) -> DeviceTiming = DeviceTiming.read,
+                selfTestTone: @escaping () -> Bool? = HAL.driverSelfTestTone) {
+        self.audioSystem = audioSystem
+        self.controller = controller
+        self.timing = timing
+        self.selfTestTone = selfTestTone
+    }
+
+    public func collect(permissions: [String: String] = [:], selfTests: [String: String] = [:],
+                        measuredLatencyMilliseconds: Double? = nil, now: Date = Date()) -> DiagnosticsReport {
+        let deviceID = audioSystem.deviceID(forUID: DuetteDriver.deviceUID)
+        let sinkID = audioSystem.deviceID(forUID: DuetteDriver.sinkUID)
+        let driver = DiagnosticsReport.Driver(
+            installed: deviceID != nil || sinkID != nil,
+            deviceID: deviceID,
+            sinkID: sinkID,
+            selfTestTone: deviceID != nil ? selfTestTone() : nil,
+            inputClients: audioSystem.inputClientPIDs(),
+            deviceTiming: deviceID.map(timing),
+            sinkTiming: sinkID.map(timing))
+
+        let status = controller?.status
+        let selectedApp = status?.configuration.appBundleID
+        var appProcesses: [AudioProcessInfo] = []
+        if let selectedApp {
+            appProcesses = ProcessCatalog.processes(
+                of: selectedApp, in: audioSystem.processes(),
+                appPIDs: Set(audioSystem.runningApplicationPIDs(bundleID: selectedApp)),
+                parentPID: audioSystem.parentPID)
+        }
+
+        var engineReport: DiagnosticsReport.Engine?
+        if let controller, let status {
+            let engine = controller.engine
+            let aggregateTiming = status.aggregateID.map(timing)
+            let estimate = aggregateTiming.map {
+                LatencyModel.estimate(aggregate: $0, duette: driver.deviceTiming, sampleRate: status.sampleRate ?? 48000)
+            }
+            var gains: [String: Float] = [:]
+            var mutes: [String: Bool] = [:]
+            for source in MixSource.allCases {
+                gains[source.rawValue] = engine.gain(for: source)
+                mutes[source.rawValue] = engine.isMuted(source)
+            }
+            engineReport = DiagnosticsReport.Engine(
+                status: status, stats: engine.stats(), gains: gains, mutes: mutes, testTone: engine.testTone,
+                aggregateTiming: aggregateTiming, estimatedLatency: estimate,
+                measuredLatencyMilliseconds: measuredLatencyMilliseconds,
+                meters: controller.meterHistory.summary(window: 60, now: now))
+        }
+
+        let software = DiagnosticsReport.Software(
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+            driverVersion: Bundle(path: DuetteDriver.bundlePath)?.infoDictionary?["CFBundleShortVersionString"] as? String,
+            macOS: ProcessInfo.processInfo.operatingSystemVersionString,
+            hardwareModel: Self.hardwareModel(),
+            processID: ProcessInfo.processInfo.processIdentifier)
+
+        return DiagnosticsReport(
+            generatedAt: now, software: software, permissions: permissions,
+            devices: audioSystem.devices().map { DiagnosticsReport.Device(info: $0, timing: timing($0.id)) },
+            driver: driver, selectedApp: selectedApp, selectedAppProcesses: appProcesses,
+            engine: engineReport, selfTests: selfTests)
+    }
+
+    /// diagnostics.json: pretty-printed, keys sorted, ISO 8601 dates.
+    public static func encode(_ report: DiagnosticsReport) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "inf",
+                                                                      negativeInfinity: "-inf", nan: "nan")
+        return try encoder.encode(report)
+    }
+
+    /// sysctl hw.model, for example "Mac14,2".
+    public static func hardwareModel() -> String {
+        var size = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return "unknown" }
+        var bytes = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &bytes, &size, nil, 0) == 0 else { return "unknown" }
+        return bytes.withUnsafeBufferPointer { buffer in
+            buffer.baseAddress.map { String(cString: $0) } ?? "unknown"
+        }
+    }
+}

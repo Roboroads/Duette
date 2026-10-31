@@ -37,7 +37,7 @@ public enum EngineSources: String, Codable, Equatable {
     }
 }
 
-public enum EngineState: Equatable {
+public enum EngineState: Equatable, Codable {
     /// Not started, or stopped for sleep.
     case idle
     /// The driver's sink is missing (not installed, or coreaudiod is restarting). No engine runs;
@@ -53,7 +53,7 @@ public enum EngineState: Equatable {
 }
 
 /// A snapshot of the controller for the UI and diagnostics.
-public struct EngineStatus: Equatable {
+public struct EngineStatus: Equatable, Codable {
     public var state: EngineState = .idle
     public var sources: EngineSources = .none
     public var configuration = EngineConfiguration()
@@ -67,6 +67,11 @@ public struct EngineStatus: Equatable {
     public var appSilentWhilePlaying = false
     /// Creating the app's tap failed; the engine runs without the app until the next rebuild.
     public var tapError: CoreAudioError?
+    /// The tapped app is recording "Duette", so its callers would hear themselves. A warning
+    /// only: the audio is left as it is.
+    public var feedbackLoop = false
+    /// The app's processes that are recording "Duette".
+    public var feedbackLoopPIDs: [pid_t] = []
     /// The most recent failure, kept after recovery for diagnostics.
     public var lastError: CoreAudioError?
     /// Full teardown-and-build cycles so far.
@@ -107,6 +112,9 @@ public final class EngineController {
     private let scheduler: ControlScheduler
     private let ownPID: pid_t
 
+    /// Levels sampled every `monitorInterval`, for diagnostics.
+    public let meterHistory = MeterHistory()
+
     /// Called on the control context after every status change. Set it before `start`.
     public var onStatusChange: ((EngineStatus) -> Void)?
 
@@ -122,6 +130,14 @@ public final class EngineController {
     private var pendingRetry: ScheduledWork?
     private var monitorTimer: ScheduledWork?
     private var failures = 0
+
+    private struct DeviceChoice: Equatable {
+        var sink: AudioObjectID?
+        var micUID: String?
+        var micID: AudioObjectID?
+    }
+
+    private var lastAttempt = DeviceChoice()
 
     private struct DeviceFacts: Equatable {
         var sampleRate: Double?
@@ -172,6 +188,7 @@ public final class EngineController {
             guard let self else { return }
             self.configuration = configuration
             self.started = true
+            self.updateStatus { $0.configuration = configuration }
             self.cancelPending()
             self.rebuildNow()
             self.scheduleMonitor()
@@ -204,7 +221,11 @@ public final class EngineController {
             self.monitorTimer?.cancel()
             self.monitorTimer = nil
             self.teardown()
-            self.updateStatus { $0.state = .idle }
+            self.updateStatus {
+                $0.state = .idle
+                $0.feedbackLoop = false
+                $0.feedbackLoopPIDs = []
+            }
         }
     }
 
@@ -247,27 +268,28 @@ public final class EngineController {
             if devicesNeedRebuild() { requestRebuild() }
         case .processesChanged:
             if appProcessesChanged() { requestRebuild() }
+            checkFeedbackLoop()
         case .deviceChanged(let device):
             if deviceFactsChanged(device) { requestRebuild() }
         case .overload(let device):
             if device == session?.aggregate { engine.countOverload() }
-        case .inputClientsChanged, .willSleep, .didWake:
+        case .inputClientsChanged:
+            checkFeedbackLoop()
+        case .willSleep, .didWake:
             break
         }
     }
 
-    private var isFailing: Bool {
-        if case .error = status.state { return true }
-        return false
+    /// Whether the sink or the mic now differ from what the last build (successful or not) used.
+    /// Comparing against the last attempt keeps the device notifications that our own aggregates
+    /// cause from triggering rebuilds, including during the retry backoff.
+    private func devicesNeedRebuild() -> Bool {
+        currentDevices() != lastAttempt
     }
 
-    private func devicesNeedRebuild() -> Bool {
-        if isFailing { return true }
-        let sink = audioSystem.deviceID(forUID: DuetteDriver.sinkUID)
-        guard let session else { return sink != nil }
-        if sink != session.sinkID { return true }
+    private func currentDevices() -> DeviceChoice {
         let mic = resolveMic()
-        return mic?.uid != session.mic?.uid || mic?.id != session.mic?.id
+        return DeviceChoice(sink: audioSystem.deviceID(forUID: DuetteDriver.sinkUID), micUID: mic?.uid, micID: mic?.id)
     }
 
     private func appProcessesChanged() -> Bool {
@@ -344,8 +366,11 @@ public final class EngineController {
         let configuration = self.configuration
         updateStatus { $0.rebuildCount += 1 }
 
-        // 1. The sink. Without it there is nothing to play into.
-        guard let sinkID = audioSystem.deviceID(forUID: DuetteDriver.sinkUID) else {
+        // 1. The sink (without it there is nothing to play into) and the mic.
+        let mic = resolveMic()
+        let sink = audioSystem.deviceID(forUID: DuetteDriver.sinkUID)
+        lastAttempt = DeviceChoice(sink: sink, micUID: mic?.uid, micID: mic?.id)
+        guard let sinkID = sink else {
             updateStatus {
                 $0.state = .waitingForDriver
                 $0.sources = .none
@@ -353,11 +378,11 @@ public final class EngineController {
                 $0.layout = nil
                 $0.appSilentWhilePlaying = false
             }
+            checkFeedbackLoop()
             return
         }
 
-        // 2. The mic and the app.
-        let mic = resolveMic()
+        // 2. The app.
         let group = appProcesses()
         var tap: ProcessTap?
         var tapError: CoreAudioError?
@@ -443,6 +468,7 @@ public final class EngineController {
             $0.sampleRate = partial.sampleRate
             $0.appSilentWhilePlaying = false
         }
+        checkFeedbackLoop()
     }
 
     private func resolveLayout(aggregate: AudioObjectID, sinkID: AudioObjectID, mic: AudioDeviceInfo?,
@@ -502,7 +528,19 @@ public final class EngineController {
         }
     }
 
+    /// Warns when the tapped app records "Duette". Duette's own process does not count.
+    private func checkFeedbackLoop() {
+        let appPIDs = Set(appProcesses().map(\.pid))
+        let looping = FeedbackLoopDetector.loopingPIDs(inputClients: audioSystem.inputClientPIDs() ?? [],
+                                                       appPIDs: appPIDs, ownPID: ownPID)
+        updateStatus {
+            $0.feedbackLoop = !looping.isEmpty
+            $0.feedbackLoopPIDs = looping
+        }
+    }
+
     private func monitor() {
+        meterHistory.record(engine.meters())
         let hint = captureLooksDenied()
         if hint != status.appSilentWhilePlaying {
             updateStatus { $0.appSilentWhilePlaying = hint }

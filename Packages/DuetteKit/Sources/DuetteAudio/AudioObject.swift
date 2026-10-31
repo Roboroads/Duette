@@ -4,7 +4,7 @@ import Foundation
 let kNoError: OSStatus = 0
 
 /// A Core Audio call that returned an error.
-public struct CoreAudioError: Error, Equatable, CustomStringConvertible {
+public struct CoreAudioError: Error, Equatable, Codable, CustomStringConvertible {
     public let status: OSStatus
     public let operation: String
 

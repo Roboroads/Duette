@@ -269,6 +269,24 @@ final class EngineControllerTests: XCTestCase {
         XCTAssertEqual(controller.status.lastError?.status, failure, "kept for diagnostics")
     }
 
+    func testDeviceNotificationsDuringBackoffDoNotCutItShort() {
+        let failure = OSStatus(bitPattern: FourCC.code("nope"))
+        system.startErrors = [failure, failure]
+        controller.start(EngineConfiguration())
+        // Destroying the failed aggregate makes the real HAL announce a device list change.
+        send(.devicesChanged)
+        scheduler.advance(by: 0.5)
+        XCTAssertEqual(system.createdAggregates.count, 1, "the 1 s backoff holds")
+        scheduler.advance(by: 0.3)
+        XCTAssertEqual(system.createdAggregates.count, 2)
+
+        // A real change (a new default mic) does not wait for the 2 s backoff.
+        system.defaultInputUID = "USB-Mic"
+        send(.defaultInputChanged)
+        XCTAssertEqual(system.createdAggregates.count, 3)
+        XCTAssertEqual(state, .running(.micOnly))
+    }
+
     func testAggregateFailureIsRetriedToo() {
         launchDiscord()
         system.aggregateErrors = [OSStatus(bitPattern: FourCC.code("what"))]
