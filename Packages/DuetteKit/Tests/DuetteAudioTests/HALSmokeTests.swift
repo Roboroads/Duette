@@ -98,6 +98,24 @@ final class HALSmokeTests: XCTestCase {
         XCTAssertEqual(inputLayout.range(.tap).count, 1)
     }
 
+    func testControllerOnTheRealSystemWaitsForTheDriver() throws {
+        guard HAL.deviceID(forUID: DuetteDriver.sinkUID) == nil else {
+            throw XCTSkip("the Duette driver is installed here")
+        }
+        let system = CoreAudioSystem()
+        XCTAssertNil(system.inputClientPIDs(), "no driver, no 'dcli'")
+        let controller = EngineController(audioSystem: system)
+        let reached = expectation(description: "waiting for the driver")
+        reached.assertForOverFulfill = false
+        controller.onStatusChange = { status in
+            if status.state == .waitingForDriver { reached.fulfill() }
+        }
+        controller.start(EngineConfiguration(appBundleID: "com.apple.Music"))
+        wait(for: [reached], timeout: 10)
+        print("HAL controller choices: mics \(controller.micChoices().map(\.name)), apps \(controller.appChoices().map(\.bundleID))")
+        controller.stop()
+    }
+
     // MARK: - Helpers
 
     /// A real output device to stand in for the sink, and an input device for the mic if any.

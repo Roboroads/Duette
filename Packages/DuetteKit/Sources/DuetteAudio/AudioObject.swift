@@ -241,8 +241,10 @@ public enum HAL {
     public static func deliverNotificationsOnHALThread() {
         var address = AudioObject.address(kAudioHardwarePropertyRunLoop)
         var runLoop: CFRunLoop? = nil
-        _ = AudioObjectSetPropertyData(AudioObject.system.id, &address, 0, nil,
-                                       UInt32(MemoryLayout<CFRunLoop?>.size), &runLoop)
+        _ = withUnsafePointer(to: &runLoop) { pointer in
+            AudioObjectSetPropertyData(AudioObject.system.id, &address, 0, nil,
+                                       UInt32(MemoryLayout<CFRunLoop?>.size), pointer)
+        }
     }
 
     /// Every device in kAudioHardwarePropertyDevices. Hidden devices are not in it.

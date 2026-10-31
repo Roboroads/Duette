@@ -143,6 +143,21 @@ public final class MixEngine {
         duette_engine_stop(handle, device, procID)
     }
 
+    /// Runs one IOProc cycle by hand on the calling thread, for tests and offline rendering.
+    /// Never call it while the engine runs on a device.
+    @discardableResult
+    public func process(input: UnsafePointer<AudioBufferList>, output: UnsafeMutablePointer<AudioBufferList>,
+                        hostTime: UInt64 = 0) -> OSStatus {
+        var now = AudioTimeStamp()
+        var inputTime = AudioTimeStamp()
+        var outputTime = AudioTimeStamp()
+        if hostTime != 0 {
+            outputTime.mHostTime = hostTime
+            outputTime.mFlags = .hostTimeValid
+        }
+        return duette_engine_ioproc(0, &now, input, &inputTime, output, &outputTime, clientData)
+    }
+
     /// Gains go from 0 to this (+6 dB).
     public static let maxGain: Float = 2
 

@@ -13,6 +13,21 @@ final class DriverProtocolTests: XCTestCase {
         XCTAssertEqual(DuetteDriver.aggregateUID(pid: 4242), "me.roboroads.duette.agg.4242")
     }
 
+    func testInputClientsDecodeFromACFArrayOfNumbers() {
+        let pids = [NSNumber(value: Int32(101)), NSNumber(value: Int32(7))] as NSArray
+        XCTAssertEqual(DuetteDriver.decodeInputClients(pids), [101, 7])
+        XCTAssertEqual(DuetteDriver.decodeInputClients(NSArray()), [])
+        XCTAssertNil(DuetteDriver.decodeInputClients(NSNumber(value: 1)))
+        XCTAssertNil(DuetteDriver.decodeInputClients(nil))
+    }
+
+    func testSelfTestToneDecodesFromANumberOrABoolean() {
+        XCTAssertEqual(DuetteDriver.decodeSelfTestTone(NSNumber(value: 1)), true)
+        XCTAssertEqual(DuetteDriver.decodeSelfTestTone(NSNumber(value: 0)), false)
+        XCTAssertEqual(DuetteDriver.decodeSelfTestTone(kCFBooleanTrue), true)
+        XCTAssertNil(DuetteDriver.decodeSelfTestTone("on" as NSString))
+    }
+
     func testErrorCodesAreReadable() {
         XCTAssertEqual(FourCC.describe(OSStatus(bitPattern: FourCC.code("nope"))), "'nope' (1852797029)")
         XCTAssertEqual(FourCC.describe(-50), "-50")
