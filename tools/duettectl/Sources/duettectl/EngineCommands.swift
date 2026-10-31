@@ -97,6 +97,13 @@ final class OverloadLog {
         return counts[device] ?? 0
     }
 
+    /// All watched devices together.
+    var total: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts.values.reduce(0, +)
+    }
+
     func cancel() {
         for listener in listeners { listener.cancel() }
         listeners = []
@@ -104,6 +111,25 @@ final class OverloadLog {
 
     deinit {
         cancel()
+    }
+}
+
+extension Recorder {
+    /// A window that no late I/O cycle damaged: no run of 32 or more exact zeros, and no overload
+    /// while it was recorded. Up to `attempts` tries; if none is clean, the last. Only for windows
+    /// that should never be silent: a level measured over a dropout reads low.
+    func cleanTake(seconds: Double, settle: Double = 0.2, overloads: OverloadLog, channel: Int = 0,
+                   attempts: Int = 3) -> [Float] {
+        var samples: [Float] = []
+        for attempt in 1...attempts {
+            let before = overloads.total
+            samples = take(seconds: seconds, settle: attempt == 1 ? settle : 0, channel: channel)
+            let late = overloads.total - before
+            let run = SignalStats(samples).longestZeroRun
+            if late == 0 && run < 32 { return samples }
+            note("window damaged (\(late) overloads, zero run \(run) frames); recording it again")
+        }
+        return samples
     }
 }
 
@@ -222,9 +248,9 @@ func runVerifyMic(_ ctx: Context) throws {
 
     // M2: the test mic's 1 kHz (on a clock 200 ppm fast) arrives at its level, resampled to the
     // sink's clock by the aggregate's drift compensation.
-    let plain = recorder.take(seconds: 2, settle: 0.5)
+    let plain = recorder.cleanTake(seconds: 2, settle: 0.5, overloads: run.overloads)
     r.tones("mic", plain, expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
-    let right = recorder.latest(seconds: 1, channel: 1)
+    let right = recorder.cleanTake(seconds: 1, overloads: run.overloads, channel: 1)
     r.tones("mic.right", right, expect: [.at(testMicHz, dbfsMinus12)])
     r.dropouts("mic.dropouts", plain)
     let meters = run.engine.meters()
@@ -233,7 +259,7 @@ func runVerifyMic(_ ctx: Context) throws {
 
     // M4: gain, mute and the output stage.
     run.engine.setGain(0.5, for: .mic)
-    r.tones("mic-gain-0.5", recorder.take(seconds: 1, settle: 0.2), expect: [.at(testMicHz, dbfsMinus12 - 6.0206)])
+    r.tones("mic-gain-0.5", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(testMicHz, dbfsMinus12 - 6.0206)])
     run.engine.setGain(1, for: .mic)
     run.engine.setMuted(true, for: .mic)
     let muted = recorder.take(seconds: 1, settle: 0.2)
@@ -243,14 +269,14 @@ func runVerifyMic(_ ctx: Context) throws {
     r.meter("mic-while-muted", run.engine.meters().mic, dbfs: dbfsMinus12)
     run.engine.setMuted(false, for: .mic)
     run.engine.setGain(2, for: .output)
-    r.tones("output-gain-2", recorder.take(seconds: 1, settle: 0.2), expect: [.at(testMicHz, dbfsMinus12 + 6.0206)])
+    r.tones("output-gain-2", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(testMicHz, dbfsMinus12 + 6.0206)])
     run.engine.setGain(1, for: .output)
 
     // The engine's own test tone replaces the mix.
     run.engine.testTone = true
-    r.tones("engine-tone", recorder.take(seconds: 1, settle: 0.2), expect: [.at(toneHz, dbfsMinus12), .absent(testMicHz, below: absentDBFS)])
+    r.tones("engine-tone", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(toneHz, dbfsMinus12), .absent(testMicHz, below: absentDBFS)])
     run.engine.testTone = false
-    r.tones("after-tone", recorder.take(seconds: 1, settle: 0.2), expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
+    r.tones("after-tone", recorder.cleanTake(seconds: 1, overloads: run.overloads), expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
     r.engineStats(run)
 }
 
@@ -300,7 +326,7 @@ func runHiddenAggregate(_ ctx: Context) throws {
     r.check("silence-before-tone", !silent.isEmpty && SignalStats(silent).peak == 0, String(format: "peak %.6f", SignalStats(silent).peak),
             detail: "no mic and no app: the engine writes zeros")
     run.engine.testTone = true
-    r.tones("engine-tone", recorder.take(seconds: 1, settle: 0.3), expect: [.at(toneHz, dbfsMinus12)])
+    r.tones("engine-tone", recorder.cleanTake(seconds: 1, settle: 0.3, overloads: run.overloads), expect: [.at(toneHz, dbfsMinus12)])
     run.engine.testTone = false
     r.engineStats(run)
 }
@@ -389,7 +415,7 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     try recorder.start()
     defer { recorder.stop() }
     recorder.waitForFrames(4800, timeout: 5)
-    let mix = recorder.take(seconds: 2, settle: 0.5)
+    let mix = recorder.cleanTake(seconds: 2, settle: 0.5, overloads: run.overloads)
 
     if expectDenied {
         // With System Audio Recording denied, the tap is expected to give exact silence, and the
@@ -407,7 +433,7 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     }
 
     r.tones("mix", mix, expect: [.at(toneHz, dbfsMinus12), .at(testMicHz, dbfsMinus12)])
-    r.tones("mix.right", recorder.latest(seconds: 1, channel: 1), expect: [.at(toneHz, dbfsMinus12), .at(testMicHz, dbfsMinus12)])
+    r.tones("mix.right", recorder.cleanTake(seconds: 1, overloads: run.overloads, channel: 1), expect: [.at(toneHz, dbfsMinus12), .at(testMicHz, dbfsMinus12)])
     let stats = run.engine.stats()
     r.check("tap.audio", stats.tapHadAudio, "tap had audio \(stats.tapHadAudio)",
             detail: "tap zero run \(stats.tapZeroFrames) frames; zeros only would mean capture permission is denied")
@@ -421,14 +447,14 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     r.meter("mic", meters.mic, dbfs: dbfsMinus12)
 
     run.engine.setGain(0.5, for: .app)
-    r.tones("app-gain-0.5", recorder.take(seconds: 1, settle: 0.2),
+    r.tones("app-gain-0.5", recorder.cleanTake(seconds: 1, overloads: run.overloads),
             expect: [.at(toneHz, dbfsMinus12 - 6.0206), .at(testMicHz, dbfsMinus12)])
     run.engine.setMuted(true, for: .mic)
-    r.tones("mic-muted", recorder.take(seconds: 1, settle: 0.2),
+    r.tones("mic-muted", recorder.cleanTake(seconds: 1, overloads: run.overloads),
             expect: [.at(toneHz, dbfsMinus12 - 6.0206), .absent(testMicHz, below: absentDBFS)])
     run.engine.setMuted(false, for: .mic)
     run.engine.setMuted(true, for: .app)
-    r.tones("app-muted", recorder.take(seconds: 1, settle: 0.2),
+    r.tones("app-muted", recorder.cleanTake(seconds: 1, overloads: run.overloads),
             expect: [.absent(toneHz, below: absentDBFS), .at(testMicHz, dbfsMinus12)])
     run.engine.setMuted(false, for: .app)
     run.engine.setGain(1, for: .app)

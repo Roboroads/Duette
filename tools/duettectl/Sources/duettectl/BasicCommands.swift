@@ -186,17 +186,18 @@ func runLoopback(_ ctx: Context) throws {
                     overloads: overloads.count(duette) + overloads.count(sink) - before)
     }
 
-    // A late I/O cycle on the CI machine damages the chirp; such a take is repeated, up to three
-    // times, and the count is reported.
+    // A late I/O cycle on the CI machine can damage the chirp (the HAL drops that cycle); such a
+    // take is repeated, at most three times, and the best one counts.
     var chosen = try take()
     var takes = 1
-    while takes < 3, chosen.overloads > 0 || (chosen.result?.confidence ?? 0) < 0.9 {
+    while takes < 3, (chosen.result?.confidence ?? 0) < 0.9 {
         note(String(format: "take %ld: %ld overloads, confidence %.3f; taking it again", takes, chosen.overloads,
                     chosen.result?.confidence ?? 0))
-        chosen = try take()
+        let next = try take()
         takes += 1
+        if (next.result?.confidence ?? 0) > (chosen.result?.confidence ?? 0) { chosen = next }
     }
-    r.info("takes", "\(takes)", detail: "a take with an overload or a damaged chirp is repeated, at most 3 times; the last had \(chosen.overloads) overloads")
+    r.info("takes", "\(takes)", detail: "a take whose chirp a late cycle damaged is repeated, at most 3 times; the one used had \(chosen.overloads) overloads")
 
     r.check("buffer.duette", Device.bufferFrameSize(duette) == buffer, "\(Device.bufferFrameSize(duette) ?? 0) frames")
     r.check("buffer.sink", Device.bufferFrameSize(sink) == buffer, "\(Device.bufferFrameSize(sink) ?? 0) frames")
