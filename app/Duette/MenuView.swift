@@ -451,8 +451,6 @@ struct ExpertsView: View {
 struct LatencyCheckView: View {
     @ObservedObject var model: AppModel
 
-    private static let explanation = "Plays a short test sound through Duette. Apps listening to Duette hear it."
-
     private var measuring: Bool { model.latencyCheck == .measuring }
 
     var body: some View {
@@ -472,24 +470,23 @@ struct LatencyCheckView: View {
             }
             .controlSize(.large)
             .disabled(measuring)
-            .accessibilityHint(Self.explanation)
+            .accessibilityHint(AppModel.latencyNote)
 
             if let result = model.latencyResult {
                 Text(result)
                     .font(.subheadline.bold())
                     .fixedSize(horizontal: false, vertical: true)
-                if let detail = model.latencyDetail {
-                    Text(detail)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } else if !measuring {
-                Text(Self.explanation)
+            }
+            ForEach([model.latencyTotal, model.latencyDetail].compactMap { $0 }, id: \.self) { line in
+                Text(line)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Before, during and after: what anyone listening to Duette hears.
+            Text(AppModel.latencyNote)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
