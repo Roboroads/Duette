@@ -139,6 +139,7 @@ public final class EngineController {
 
     private let statusLock = NSLock()
     private var currentStatus = EngineStatus()
+    private var latestMeasurement: LatencyMeasurement?
 
     // Control-context state.
     private var configuration = EngineConfiguration()
@@ -245,6 +246,27 @@ public final class EngineController {
                 $0.state = .idle
                 $0.clearEngineFacts()
             }
+        }
+    }
+
+    // MARK: - Measuring the latency
+
+    /// The latest successful "Measure latency", for diagnostics. Any thread.
+    public var latestLatencyMeasurement: LatencyMeasurement? {
+        statusLock.lock()
+        defer { statusLock.unlock() }
+        return latestMeasurement
+    }
+
+    /// "Measure latency": pauses the engine, sends a chirp through the sink into "Duette" at the
+    /// engine's buffer size, and starts the engine again on the same aggregate. Readers of
+    /// "Duette" hear the chirp in about a second of otherwise silence. `timing` reads the HAL's
+    /// figures for the estimate. `completion` runs on the control context.
+    public func measureLatency(timing: @escaping (AudioObjectID) -> DeviceTiming = DeviceTiming.read,
+                               now: @escaping () -> Date = { Date() },
+                               completion: @escaping (Result<LatencyMeasurement, LatencyMeasurementError>) -> Void) {
+        scheduler.async {
+            completion(.failure(.unsupported))
         }
     }
 

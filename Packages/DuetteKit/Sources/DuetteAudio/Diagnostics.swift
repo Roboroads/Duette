@@ -100,30 +100,6 @@ public struct DeviceTiming: Codable, Equatable {
     }
 }
 
-public struct LatencyEstimate: Codable, Equatable {
-    public var frames: UInt32
-    public var milliseconds: Double
-}
-
-public enum LatencyModel {
-    /// The latency Duette adds, estimated from the HAL's own figures: the aggregate's input side
-    /// (one buffer, the input latency, which includes the mic's, and the safety offset), its output
-    /// side into the sink (one buffer, latency, safety offset), and the read from "Duette" (one
-    /// buffer of the reader, latency, safety offset). The drift-compensation resampler is not in
-    /// any HAL property and is left out; S9 calibrates this against a loopback measurement.
-    public static func estimate(aggregate: DeviceTiming, duette: DeviceTiming?, sampleRate: Double) -> LatencyEstimate {
-        let buffer = aggregate.bufferFrameSize ?? 0
-        var frames = buffer * 2
-        frames += (aggregate.inputLatency ?? 0) + (aggregate.inputSafetyOffset ?? 0)
-        frames += (aggregate.outputLatency ?? 0) + (aggregate.outputSafetyOffset ?? 0)
-        if let duette {
-            frames += (duette.bufferFrameSize ?? buffer) + (duette.inputLatency ?? 0) + (duette.inputSafetyOffset ?? 0)
-        }
-        let rate = sampleRate > 0 ? sampleRate : 48000
-        return LatencyEstimate(frames: frames, milliseconds: Double(frames) * 1000 / rate)
-    }
-}
-
 /// Everything "Export Diagnostics..." writes into diagnostics.json.
 public struct DiagnosticsReport: Codable {
     public struct Software: Codable {
@@ -158,7 +134,10 @@ public struct DiagnosticsReport: Codable {
         public var testTone: Bool
         public var aggregateTiming: DeviceTiming?
         public var estimatedLatency: LatencyEstimate?
+        /// The last "Measure latency" result, if there was one: what Duette adds, in milliseconds.
         public var measuredLatencyMilliseconds: Double?
+        /// The whole of it: the measured loopback, the HAL's estimate and how far apart they are.
+        public var measuredLatency: LatencyMeasurement?
         /// Meter range over the last 60 seconds.
         public var meters: MeterSummary
     }
@@ -193,7 +172,7 @@ public final class DiagnosticsCollector {
     }
 
     public func collect(permissions: [String: String] = [:], selfTests: [String: String] = [:],
-                        measuredLatencyMilliseconds: Double? = nil, now: Date = Date()) -> DiagnosticsReport {
+                        now: Date = Date()) -> DiagnosticsReport {
         let deviceID = audioSystem.deviceID(forUID: DuetteDriver.deviceUID)
         let sinkID = audioSystem.deviceID(forUID: DuetteDriver.sinkUID)
         let driver = DiagnosticsReport.Driver(
@@ -232,7 +211,7 @@ public final class DiagnosticsCollector {
             engineReport = DiagnosticsReport.Engine(
                 status: status, stats: engine.stats(), gains: gains, mutes: mutes, testTone: engine.testTone,
                 aggregateTiming: aggregateTiming, estimatedLatency: estimate,
-                measuredLatencyMilliseconds: measuredLatencyMilliseconds,
+                measuredLatencyMilliseconds: nil, measuredLatency: nil,
                 meters: controller.meterHistory.summary(window: 60, now: now))
         }
 

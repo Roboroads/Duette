@@ -76,6 +76,21 @@ final class FakeAudioSystem: AudioSystem {
     var aggregateErrors: [OSStatus] = []
     var startErrors: [OSStatus] = []
 
+    /// What a chirp through the loopback gives.
+    var loopback: Result<LoopbackMeasurement, Error> = .success(
+        LoopbackMeasurement(bufferFrameSize: 128, meanFrames: 272, worstFrames: 400, sampleOffset: 0,
+                            confidence: 1, takes: 1))
+
+    struct LoopbackCall: Equatable {
+        var sink: AudioObjectID
+        var duette: AudioObjectID
+        var bufferFrameSize: UInt32
+        /// IOProcs running while the probe played into the sink.
+        var ioRunning: Int
+    }
+
+    private(set) var loopbackCalls: [LoopbackCall] = []
+
     // What happened.
     private(set) var createdAggregates: [[String: Any]] = []
     private(set) var liveAggregates: [AudioObjectID: [String: Any]] = [:]
@@ -232,6 +247,13 @@ final class FakeAudioSystem: AudioSystem {
     func watch(devices: [AudioObjectID], aggregate: AudioObjectID?) {
         watchedDevices = devices
         watchedAggregate = aggregate
+    }
+
+    func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
+                         sampleRate: Double) throws -> LoopbackMeasurement {
+        loopbackCalls.append(LoopbackCall(sink: sink, duette: duette, bufferFrameSize: bufferFrameSize,
+                                          ioRunning: startedIO.count - stoppedIO.count))
+        return try loopback.get()
     }
 }
 

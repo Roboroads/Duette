@@ -135,9 +135,11 @@ final class DiagnosticsTests: XCTestCase {
                                      inputSafetyOffset: 20, outputSafetyOffset: 30)
         let duette = DeviceTiming(bufferFrameSize: 256, inputLatency: 0, inputSafetyOffset: 16)
         let estimate = LatencyModel.estimate(aggregate: aggregate, duette: duette, sampleRate: 48000)
-        let buffers: UInt32 = 128 * 2
+        // The engine's input and output buffers, and a reader of "Duette" with the same buffer
+        // size: "Duette"'s own 256 is this process's setting, not the reader's.
+        let buffers: UInt32 = 128 * 3
         let aggregateHops: UInt32 = 40 + 20 + 10 + 30
-        let duetteHop: UInt32 = 256 + 0 + 16
+        let duetteHop: UInt32 = 0 + 16
         XCTAssertEqual(estimate.frames, buffers + aggregateHops + duetteHop)
         XCTAssertEqual(estimate.milliseconds, Double(estimate.frames) / 48, accuracy: 1e-9)
         XCTAssertEqual(LatencyModel.estimate(aggregate: DeviceTiming(bufferFrameSize: 64), duette: nil, sampleRate: 48000).frames, 128)
@@ -160,10 +162,14 @@ final class DiagnosticsTests: XCTestCase {
 
         let timing = DeviceTiming(bufferFrameSize: 256, inputLatency: 10, outputLatency: 10,
                                   inputSafetyOffset: 10, outputSafetyOffset: 10)
+        system.loopback = .success(LoopbackMeasurement(bufferFrameSize: 256, meanFrames: 560, worstFrames: 700,
+                                                       sampleOffset: 0, confidence: 1, takes: 1))
+        var measured: LatencyMeasurement?
+        controller.measureLatency(timing: { _ in timing }) { measured = try? $0.get() }
+        let measurement = try XCTUnwrap(measured)
         let collector = DiagnosticsCollector(audioSystem: system, controller: controller,
                                              timing: { _ in timing }, selfTestTone: { false })
-        let report = collector.collect(permissions: ["microphone": "authorized"], selfTests: ["driverTone": "passed"],
-                                       measuredLatencyMilliseconds: 9.5)
+        let report = collector.collect(permissions: ["microphone": "authorized"], selfTests: ["driverTone": "passed"])
 
         XCTAssertEqual(report.devices.map(\.info.uid), ["BuiltInMic", DuetteDriver.deviceUID])
         XCTAssertTrue(report.driver.installed)
@@ -180,7 +186,9 @@ final class DiagnosticsTests: XCTestCase {
         // Two 256-frame buffers and 4 x 10 on the aggregate, then 256 + 2 x 10 for "Duette".
         let expectedFrames: UInt32 = 828
         XCTAssertEqual(engine.estimatedLatency?.frames, expectedFrames)
-        XCTAssertEqual(engine.measuredLatencyMilliseconds, 9.5)
+        // The latest "Measure latency": the 276-frame input side plus the 560 frames measured.
+        XCTAssertEqual(engine.measuredLatency, measurement)
+        XCTAssertEqual(engine.measuredLatencyMilliseconds ?? 0, 836.0 / 48, accuracy: 1e-9)
         XCTAssertGreaterThan(engine.meters.samples, 0)
         XCTAssertEqual(report.permissions["microphone"], "authorized")
         XCTAssertEqual(report.selfTests["driverTone"], "passed")
@@ -188,6 +196,8 @@ final class DiagnosticsTests: XCTestCase {
         let json = try DiagnosticsCollector.encode(report)
         let text = String(decoding: json, as: UTF8.self)
         XCTAssertTrue(text.contains("\"feedbackLoop\""))
+        XCTAssertTrue(text.contains("\"measuredLatency\""))
+        XCTAssertTrue(text.contains("\"matchesEstimate\""))
         XCTAssertTrue(text.contains("\"hardwareModel\""))
         let decoded = try JSONDecoder.withISODates().decode(DiagnosticsReport.self, from: json)
         XCTAssertEqual(decoded.engine?.status, engine.status)

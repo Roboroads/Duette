@@ -1,4 +1,4 @@
-@testable import DuettectlCore
+@testable import DuetteAudio
 import XCTest
 
 final class LoopbackAnalysisTests: XCTestCase {
@@ -9,11 +9,11 @@ final class LoopbackAnalysisTests: XCTestCase {
         for delay in [0, 37, 480, 3000] {
             var recording = [Float](repeating: 0, count: delay) + chirp + [Float](repeating: 0, count: 4000 - delay)
             for i in recording.indices { recording[i] += 0.01 * Float(sin(Double(i) * 1.7)) }
-            let estimate = Latency.estimate(reference: chirp, recording: recording, maxLagFrames: 4000)
+            let estimate = LagEstimator.estimate(reference: chirp, recording: recording, maxLagFrames: 4000)
             XCTAssertEqual(estimate.lagFrames, delay)
             XCTAssertGreaterThan(estimate.confidence, 0.9)
         }
-        XCTAssertEqual(Latency.estimate(reference: [], recording: chirp, maxLagFrames: 10).confidence, 0)
+        XCTAssertEqual(LagEstimator.estimate(reference: [], recording: chirp, maxLagFrames: 10).confidence, 0)
         XCTAssertEqual(Chirp.make(sampleRate: 48000, startHz: 200, endHz: 12000, frames: 0), [])
     }
 
@@ -125,5 +125,34 @@ final class LoopbackAnalysisTests: XCTestCase {
         XCTAssertEqual(LoopbackAnalysis.blockContaining(383, in: blocks)?.position, 256)
         XCTAssertNil(LoopbackAnalysis.blockContaining(384, in: blocks))
         XCTAssertNil(LoopbackAnalysis.blockContaining(-1, in: blocks))
+    }
+
+    // MARK: What "Measure latency" keeps of a take
+
+    func testACleanTakeBecomesAMeasurement() throws {
+        let result = try XCTUnwrap(Run().analyze())
+        XCTAssertTrue(LoopbackProbe.isGood(result))
+        let measurement = try XCTUnwrap(LoopbackMeasurement(result: result, bufferFrameSize: 128, takes: 2))
+        XCTAssertEqual(measurement.bufferFrameSize, 128)
+        XCTAssertEqual(measurement.meanFrames, 272)
+        XCTAssertEqual(measurement.worstFrames, 272)
+        XCTAssertEqual(measurement.sampleOffset, 0)
+        XCTAssertGreaterThan(measurement.confidence, 0.99)
+        XCTAssertEqual(measurement.takes, 2)
+    }
+
+    func testAShiftedTakeIsNotGoodButStillMeasured() throws {
+        let result = try XCTUnwrap(Run(offset: 5).analyze())
+        XCTAssertFalse(LoopbackProbe.isGood(result), "the loopback must be exact in sample time")
+        XCTAssertEqual(LoopbackMeasurement(result: result, bufferFrameSize: 128, takes: 1)?.sampleOffset, 5)
+    }
+
+    func testASilentTakeIsNoMeasurement() throws {
+        let run = Run()
+        let silent = try XCTUnwrap(LoopbackAnalysis.analyze(chirp: run.chirp, writer: run.writer, reader: run.reader,
+                                                            recording: [Float](repeating: 0, count: run.recording.count),
+                                                            bufferFrames: 128))
+        XCTAssertFalse(LoopbackProbe.isGood(silent))
+        XCTAssertNil(LoopbackMeasurement(result: silent, bufferFrameSize: 128, takes: 1))
     }
 }
