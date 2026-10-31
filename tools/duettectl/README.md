@@ -28,9 +28,9 @@ stuck in a Core Audio call.
 | `hidden-agg` | Engine with only the hidden sink: it is the aggregate's main and clock device, the IOProc runs at the sink's rate, and the engine's tone reaches "Duette". |
 | `verify-mix` | afplay plays 440 Hz into "Duette Test Speaker"; the engine taps it and mixes the test mic: both tones at -12 dBFS, app gain and mutes. `--expect-denied` checks what happens when System Audio Recording is denied. |
 | `rate-mismatch` | `verify-mix` with the test speaker, and so the tap, at 44.1 kHz. |
-| `dcli` | The driver's `'dcli'` lists this process while it reads "Duette" directly, through its own aggregate (`--mode aggregate`, as call apps do) or through the voice-processing unit (`--mode vpio`), and drops it after. |
-| `feedback-loop` | A separate process that plays audio and reads "Duette" through an aggregate: `'dcli'` names it, ProcessCatalog groups it, FeedbackLoopDetector fires, and Duette's own reading never counts. `--controller` also checks EngineController's warning (needs a working tap). |
-| `soak` | Engine with the test mic (and `--with-app` a tapped tone) for `--minutes`: every second of "Duette" has the tones, no dropouts, no overloads. |
+| `dcli` | The driver's `'dcli'` lists this process while it reads "Duette" directly (`--mode direct`), through its own aggregate (`--mode aggregate`, as call apps do) or through the voice-processing unit (`--mode vpio`), and drops it after. `--mode concurrent` has another process read first: both must be listed. |
+| `feedback-loop` | This process reads "Duette", then a separate process that plays audio reads it through an aggregate: `'dcli'` names both, ProcessCatalog groups the app, FeedbackLoopDetector fires for it and never for this process. `--controller` also checks EngineController's warning (needs a working tap). |
+| `soak` | Engine with the test mic (and `--with-app` a tapped tone) for `--minutes`: every second of "Duette" has the tones, no dropouts, no overloads; a failed second with no overload during it is counted apart (`windows.unexplained`). |
 | `overloads` | A control: counts the HAL's late-cycle reports (`kAudioDeviceProcessorOverload`) on any device, or an aggregate of two (`--with`), with an IOProc that only copies samples. It tells a machine that cannot keep time from a problem in Duette. |
 | `record`, `play`, `make-tone`, `analyze`, `set-default`, `set-rate`, `whoami` | Tools for the above and for poking at a machine by hand. |
 

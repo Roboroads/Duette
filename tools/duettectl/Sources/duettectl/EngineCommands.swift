@@ -75,6 +75,7 @@ final class OverloadLog {
     private let queue = DispatchQueue(label: "me.roboroads.duette.duettectl.overloads")
     private let lock = NSLock()
     private var counts: [AudioObjectID: Int] = [:]
+    private var stamps: [Date] = []
 
     func watch(_ device: AudioObjectID, name: String) {
         let listener = try? PropertyListener(objectID: device, selector: kAudioDeviceProcessorOverload, queue: queue) { [weak self] in
@@ -87,6 +88,7 @@ final class OverloadLog {
         lock.lock()
         let count = (counts[device] ?? 0) + 1
         counts[device] = count
+        stamps.append(Date())
         lock.unlock()
         note("overload #\(count) on \(name)")
     }
@@ -95,6 +97,13 @@ final class OverloadLog {
         lock.lock()
         defer { lock.unlock() }
         return counts[device] ?? 0
+    }
+
+    /// When each overload was reported, any device.
+    var times: [Date] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stamps
     }
 
     /// All watched devices together.
@@ -114,10 +123,27 @@ final class OverloadLog {
     }
 }
 
+/// How the measurement windows of a command went: taken clean at once, clean after retakes, or
+/// never clean.
+enum WindowLog {
+    private(set) static var windows = 0
+    private(set) static var retaken = 0
+    private(set) static var neverClean = 0
+    private(set) static var attempts = 0
+
+    static func record(attempts used: Int, clean: Bool) {
+        windows += 1
+        attempts += used
+        if used > 1 { retaken += 1 }
+        if !clean { neverClean += 1 }
+    }
+}
+
 extension Recorder {
     /// A window that no late I/O cycle damaged: no run of 32 or more exact zeros, and no overload
-    /// while it was recorded. Up to `attempts` tries; if none is clean, the least damaged. Only
-    /// for windows that should never be silent: a level measured over a dropout reads low.
+    /// while it was recorded. Up to `attempts` tries; if none is clean, the least damaged, and the
+    /// command fails (Reporter.engineStats). Only for windows that should never be silent: a level
+    /// measured over a dropout reads low.
     func cleanTake(seconds: Double, settle: Double = 0.2, overloads: OverloadLog, channel: Int = 0,
                    attempts: Int = 5) -> [Float] {
         var best: (samples: [Float], damage: Int)?
@@ -127,12 +153,16 @@ extension Recorder {
             let late = overloads.total - before
             let stats = SignalStats(samples)
             let run = stats.longestZeroRun >= 32 ? stats.zeros : 0
-            if late == 0 && run == 0 { return samples }
+            if late == 0 && run == 0 {
+                WindowLog.record(attempts: attempt, clean: true)
+                return samples
+            }
             // Missing frames weigh most; an overload that left no gap is a small blemish.
             let damage = run * 10 + late
             if best == nil || damage < best!.damage { best = (samples, damage) }
             note("window damaged (\(late) overloads, \(stats.longestZeroRun)-frame zero run); recording it again")
         }
+        WindowLog.record(attempts: attempts, clean: false)
         return best?.samples ?? []
     }
 }
@@ -167,6 +197,21 @@ extension Reporter {
         }
         check("layout-mismatches", stats.layoutMismatches == 0, "\(stats.layoutMismatches)",
               detail: "cycles whose buffer lists did not fit the resolved layout")
+        if WindowLog.windows > 0 {
+            check("windows.clean", WindowLog.neverClean == 0,
+                  "\(WindowLog.windows - WindowLog.neverClean) of \(WindowLog.windows) clean",
+                  detail: "\(WindowLog.retaken) needed a retake, \(WindowLog.attempts) takes in all; a window with an overload or a dropout is taken again, at most 5 times")
+        }
+    }
+
+    /// Everything in a recording but the expected tones: noise, clicks, resampling artefacts.
+    func residual(_ name: String, _ samples: [Float], tones frequencies: [Double], limit: Double = -55) {
+        guard let spectrum = Spectrum(samples: samples, sampleRate: Device.sampleRate) else {
+            check(name, false, "too short to analyse")
+            return
+        }
+        let residual = spectrum.residualDBFS(excluding: frequencies.compactMap { spectrum.tone(near: $0) })
+        check(name, residual <= limit, Format.db(residual), detail: String(format: "everything but the tones, limit %.0f dBFS", limit))
     }
 
     /// Dropouts in a recording, reported with where the longest one starts.
@@ -233,7 +278,7 @@ func runVerifyMic(_ ctx: Context) throws {
     let r = ctx.reporter
     let duette = try Device.require(uid: DuetteDriver.deviceUID, timeout: 30)
     guard Device.find(uid: DuetteDriver.testMicUID, timeout: 10) != nil else {
-        r.check("test-mic", false, "not found", detail: "needs the driver built with DUETTE_TEST_DEVICES=ON")
+        r.skip("test-mic", "not found", detail: "needs the driver built with DUETTE_TEST_DEVICES=ON")
         return
     }
     try? HAL.setDriverSelfTestTone(false)
@@ -254,6 +299,7 @@ func runVerifyMic(_ ctx: Context) throws {
     // sink's clock by the aggregate's drift compensation.
     let plain = recorder.cleanTake(seconds: 2, settle: 0.5, overloads: run.overloads)
     r.tones("mic", plain, expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
+    r.residual("mic.residual", plain, tones: [testMicHz])
     let right = recorder.cleanTake(seconds: 1, overloads: run.overloads, channel: 1)
     r.tones("mic.right", right, expect: [.at(testMicHz, dbfsMinus12)])
     r.dropouts("mic.dropouts", plain)
@@ -341,6 +387,7 @@ func runHiddenAggregate(_ ctx: Context) throws {
 final class TonePlayback {
     let process = Process()
     let url: URL
+    private var cleanup: Int?
 
     init(rate: Double, seconds: Double = 90) throws {
         url = FileManager.default.temporaryDirectory.appendingPathComponent("duettectl-440-\(Int(rate)).wav")
@@ -350,6 +397,7 @@ final class TonePlayback {
         process.arguments = [url.path]
         Stage.set("start afplay")
         try process.run()
+        cleanup = Cleanup.add(process)
     }
 
     var pid: pid_t { process.processIdentifier }
@@ -367,6 +415,8 @@ final class TonePlayback {
             process.terminate()
             process.waitUntilExit()
         }
+        if let cleanup { Cleanup.remove(cleanup) }
+        cleanup = nil
         try? FileManager.default.removeItem(at: url)
     }
 
@@ -381,16 +431,20 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     let duette = try Device.require(uid: DuetteDriver.deviceUID, timeout: 30)
     guard Device.find(uid: DuetteDriver.testMicUID, timeout: 10) != nil,
           let speaker = Device.find(uid: DuetteDriver.testSpeakerUID, timeout: 10) else {
-        r.check("test-devices", false, "not found", detail: "needs the driver built with DUETTE_TEST_DEVICES=ON")
+        r.skip("test-devices", "not found", detail: "needs the driver built with DUETTE_TEST_DEVICES=ON")
         return
     }
     try? HAL.setDriverSelfTestTone(false)
 
     // afplay plays into the test speaker at `speakerRate`; its tap runs at that rate.
     let defaults = DefaultDevices()
+    let rateCleanup = Cleanup.add("test speaker back to 48 kHz") {
+        try? AudioObject(speaker).set(kAudioDevicePropertyNominalSampleRate, to: Float64(48000))
+    }
     defer {
         defaults.restore()
         try? Device.setNominalRate(speaker, 48000)
+        Cleanup.remove(rateCleanup)
     }
     Stage.set("test speaker to \(Int(speakerRate)) Hz")
     try Device.setNominalRate(speaker, speakerRate)
@@ -442,10 +496,7 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     r.check("tap.audio", stats.tapHadAudio, "tap had audio \(stats.tapHadAudio)",
             detail: "tap zero run \(stats.tapZeroFrames) frames; zeros only would mean capture permission is denied")
     r.dropouts("mix.dropouts", mix)
-    if let spectrum = Spectrum(samples: mix, sampleRate: Device.sampleRate) {
-        let residual = spectrum.residualDBFS(excluding: [spectrum.tone(near: toneHz), spectrum.tone(near: testMicHz)].compactMap { $0 })
-        r.info("residual", Format.db(residual), detail: "everything but the two tones: noise, clicks, resampling artefacts")
-    }
+    r.residual("residual", mix, tones: [toneHz, testMicHz])
     let meters = run.engine.meters()
     r.meter("app", meters.app, dbfs: dbfsMinus12)
     r.meter("mic", meters.mic, dbfs: dbfsMinus12)
@@ -475,18 +526,20 @@ func runSoak(_ ctx: Context) throws {
     let duette = try Device.require(uid: DuetteDriver.deviceUID, timeout: 30)
     guard Device.find(uid: DuetteDriver.testMicUID, timeout: 10) != nil,
           let speaker = Device.find(uid: DuetteDriver.testSpeakerUID, timeout: 10) else {
-        r.check("test-devices", false, "not found", detail: "needs the driver built with DUETTE_TEST_DEVICES=ON")
+        r.skip("test-devices", "not found", detail: "needs the driver built with DUETTE_TEST_DEVICES=ON")
         return
     }
     try? HAL.setDriverSelfTestTone(false)
 
     // The tapped process: another duettectl playing 440 Hz into the test speaker for the whole run.
     var player: Process?
+    var playerCleanup: Int?
     defer {
         if let player, player.isRunning {
             player.terminate()
             player.waitUntilExit()
         }
+        if let playerCleanup { Cleanup.remove(playerCleanup) }
     }
     if withApp {
         try Device.setNominalRate(speaker, 48000)
@@ -495,6 +548,7 @@ func runSoak(_ ctx: Context) throws {
         process.arguments = ["play", "--device", DuetteDriver.testSpeakerUID, "--hz", "440", "--dbfs", "-12",
                              "--seconds", String(Int(minutes * 60 + 60)), "--timeout", "0"]
         try process.run()
+        playerCleanup = Cleanup.add(process)
         player = process
         waitUntil(10, interval: 0.1) {
             HAL.processObjectID(forPID: process.processIdentifier).flatMap(HAL.processInfo)?.isRunningOutput ?? false
@@ -520,14 +574,17 @@ func runSoak(_ ctx: Context) throws {
     var cursor = recorder.frames
     let started = Date()
     let total = minutes * 60
-    var windows = 0, failedWindows = 0, longestZeroRun = 0
+    var windows = 0, failedWindows = 0, unexplained = 0, longestZeroRun = 0
     var worstDB = 0.0, worstHz = 0.0
     var firstFailure: String?
+    var failed: [(end: Date, what: String)] = []
     Stage.set("soaking for \(minutes) minutes")
     while Date().timeIntervalSince(started) < total {
         guard recorder.waitForFrames(cursor + UInt64(window), timeout: 5) else {
             failedWindows += 1
-            firstFailure = firstFailure ?? "no audio from Duette for 5 s at \(Int(Date().timeIntervalSince(started))) s"
+            let what = "no audio from Duette for 5 s at \(Int(Date().timeIntervalSince(started))) s"
+            firstFailure = firstFailure ?? what
+            failed.append((Date().addingTimeInterval(-4), what))
             cursor = recorder.frames
             continue
         }
@@ -545,10 +602,10 @@ func runSoak(_ ctx: Context) throws {
         }
         if results.contains(where: { !$0.passed }) || samples.count < window || stats.longestZeroRun >= 32 {
             failedWindows += 1
-            if firstFailure == nil {
-                firstFailure = "window \(windows) at \(Int(Date().timeIntervalSince(started))) s: "
-                    + results.map(\.description).joined(separator: "; ") + ", zero run \(stats.longestZeroRun)"
-            }
+            let what = "window \(windows) at \(Int(Date().timeIntervalSince(started))) s: "
+                + results.map(\.description).joined(separator: "; ") + ", zero run \(stats.longestZeroRun)"
+            firstFailure = firstFailure ?? what
+            failed.append((Date(), what))
         }
         if windows % 60 == 0 {
             note("soak: \(windows) s, \(failedWindows) failed windows, \(run.engine.stats().overloads) engine overloads, \(run.overloads.count(duette)) reader overloads")
@@ -559,6 +616,19 @@ func runSoak(_ ctx: Context) throws {
     r.check("windows", failedWindows == 0 && windows > 0, "\(failedWindows) of \(windows) failed",
             detail: firstFailure ?? String(format: "each window: %@ within 1 dB and 2 Hz; worst %.2f dB, %.2f Hz",
                                             expect.map(\.description).joined(separator: ", "), worstDB, worstHz))
+    // A failed second with no overload reported during it (give or take 0.3 s: the notification
+    // comes on its own queue) is not the machine's doing.
+    let stamps = run.overloads.times
+    var firstUnexplained: String?
+    for window in failed {
+        let from = window.end.addingTimeInterval(-1.3), to = window.end.addingTimeInterval(0.3)
+        if !stamps.contains(where: { $0 >= from && $0 <= to }) {
+            unexplained += 1
+            firstUnexplained = firstUnexplained ?? window.what
+        }
+    }
+    r.check("windows.unexplained", unexplained == 0, "\(unexplained) of \(failedWindows) failed windows had no overload",
+            detail: firstUnexplained ?? "every failed window coincides with a kAudioDeviceProcessorOverload")
     r.check("dropouts", longestZeroRun < 32, "longest zero run \(longestZeroRun) frames")
     let readerOverloads = run.overloads.count(duette)
     r.check("reader-overloads", readerOverloads == 0, "\(readerOverloads)", detail: "kAudioDeviceProcessorOverload on Duette (this reader)")

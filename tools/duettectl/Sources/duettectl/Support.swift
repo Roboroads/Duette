@@ -39,13 +39,66 @@ enum Stage {
     }
 }
 
+/// What has to be undone if the process ends early: child processes to stop, system settings to
+/// put back. `defer` blocks do it on a normal exit; the watchdog's exit skips them, so it runs
+/// these instead.
+enum Cleanup {
+    private static let lock = NSLock()
+    private static var actions: [Int: (name: String, run: () -> Void)] = [:]
+    private static var next = 0
+
+    /// Registers `action`; pass the returned token to `remove` once it is done normally.
+    @discardableResult
+    static func add(_ name: String, _ action: @escaping () -> Void) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        next += 1
+        actions[next] = (name, action)
+        return next
+    }
+
+    static func remove(_ token: Int) {
+        lock.lock()
+        actions[token] = nil
+        lock.unlock()
+    }
+
+    /// A child process: terminated if the watchdog fires while it runs.
+    @discardableResult
+    static func add(_ process: Process) -> Int {
+        add("stop pid \(process.processIdentifier)") {
+            if process.isRunning { process.terminate() }
+        }
+    }
+
+    /// Runs everything registered, newest first, and forgets it.
+    static func runAll() {
+        lock.lock()
+        let pending = actions.sorted { $0.key > $1.key }.map(\.value)
+        actions = [:]
+        lock.unlock()
+        for action in pending {
+            note("cleanup: \(action.name)")
+            action.run()
+        }
+    }
+}
+
 /// Ends the process with a FAIL check if the command takes longer than `seconds`: a Core Audio
-/// call that never returns (a pending permission prompt, for example) must not hang CI.
+/// call that never returns (a pending permission prompt, for example) must not hang CI. Before it
+/// exits it runs the Cleanup actions, for at most 5 s: one of them may block on the same stuck HAL.
 enum Watchdog {
     static func arm(seconds: Double, reporter: Reporter) {
         guard seconds > 0 else { return }
         DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
             reporter.record("watchdog", .fail, "no result after \(Int(seconds)) s", detail: "stuck at: \(Stage.value)")
+            fflush(stdout)
+            let done = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                Cleanup.runAll()
+                done.signal()
+            }
+            _ = done.wait(timeout: .now() + 5)
             fflush(stdout)
             exit(124)
         }
@@ -169,10 +222,16 @@ enum Device {
 /// Restores the system default devices it changed, when it goes away.
 final class DefaultDevices {
     private var saved: [(AudioObjectPropertySelector, AudioObjectID)] = []
+    private var cleanup: Int?
 
     func set(_ selector: AudioObjectPropertySelector, to id: AudioObjectID) throws {
         if let current = Device.defaultDevice(selector), !saved.contains(where: { $0.0 == selector }) {
             saved.append((selector, current))
+            let restore = saved
+            if let cleanup { Cleanup.remove(cleanup) }
+            cleanup = Cleanup.add("restore the default devices") {
+                for (selector, id) in restore.reversed() { try? AudioObject.system.set(selector, to: id) }
+            }
         }
         try Device.setDefault(selector, to: id)
     }
@@ -180,6 +239,8 @@ final class DefaultDevices {
     func restore() {
         for (selector, id) in saved.reversed() { try? Device.setDefault(selector, to: id) }
         saved = []
+        if let cleanup { Cleanup.remove(cleanup) }
+        cleanup = nil
     }
 
     deinit {

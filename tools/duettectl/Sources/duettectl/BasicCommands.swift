@@ -4,9 +4,9 @@ import DuettectlCore
 import Foundation
 
 let dbfsMinus12 = -12.0
-/// A muted or absent tone must stay under this. It would otherwise be at -18 or -12 dBFS; the odd
-/// late I/O cycle on a busy CI machine spreads up to about -65 dBFS of the other tone around.
-let absentDBFS = -50.0
+/// A muted or absent tone must stay under this. A muted source adds exact zeros, so what is left
+/// at its frequency is the other tone's leakage, about -130 dBFS or less on a clean window.
+let absentDBFS = -90.0
 /// The engine's and the driver's test tones, and the test mic, are all at -12 dBFS.
 let toneHz = 440.0
 let testMicHz = 1000.0
@@ -88,9 +88,11 @@ func runSelfTest(_ ctx: Context) throws {
     let recorder = try Recorder(device: duette, seconds: 20)
     Stage.set("start IO on Duette")
     try recorder.start()
+    let toneOff = Cleanup.add("driver tone off") { try? HAL.setDriverSelfTestTone(false) }
     defer {
         recorder.stop()
         try? HAL.setDriverSelfTestTone(false)
+        Cleanup.remove(toneOff)
     }
     r.check("io.started", recorder.waitForFrames(4800, timeout: 5), "\(recorder.frames) frames in \(recorder.cycles) cycles")
 
@@ -186,18 +188,42 @@ func runLoopback(_ ctx: Context) throws {
                     overloads: overloads.count(duette) + overloads.count(sink) - before)
     }
 
-    // A late I/O cycle on the CI machine can damage the chirp (the HAL drops that cycle); such a
-    // take is repeated, at most three times, and the best one counts.
+    // Every take is judged on all four counts. A take that fails with no overload during it is a
+    // fault in the loopback and fails the command at once; one that fails while the HAL reported
+    // a late cycle may be the machine's doing, so it is taken again (at most 5 takes in all).
+    let limit = reported + 16
+    func problems(_ take: Take) -> [String] {
+        guard let result = take.result else { return ["nothing to analyse"] }
+        var found: [String] = []
+        if result.confidence < 0.9 { found.append(String(format: "chirp confidence %.3f", result.confidence)) }
+        if result.sampleOffset != 0 { found.append("sample offset \(result.sampleOffset.map { String(format: "%+.0f", $0) } ?? "unknown")") }
+        if (result.latencyMean ?? .infinity) > limit {
+            found.append(String(format: "latency %.0f frames over %.0f", result.latencyMean ?? -1, limit))
+        }
+        let silent = result.silenceDelay.map { $0 <= Double(buffer) } ?? false
+        if !silent || result.nonZeroAfterStop != 0 || result.observedAfterStop < Double(4 * Int(buffer)) {
+            found.append("not silent after the writer stopped")
+        }
+        return found
+    }
     var chosen = try take()
     var takes = 1
-    while takes < 3, (chosen.result?.confidence ?? 0) < 0.9 {
-        note(String(format: "take %ld: %ld overloads, confidence %.3f; taking it again", takes, chosen.overloads,
-                    chosen.result?.confidence ?? 0))
-        let next = try take()
+    var failures = problems(chosen)
+    while !failures.isEmpty, chosen.overloads > 0, takes < 5 {
+        note("take \(takes): \(failures.joined(separator: ", ")) with \(chosen.overloads) overloads; taking it again")
+        chosen = try take()
         takes += 1
-        if (next.result?.confidence ?? 0) > (chosen.result?.confidence ?? 0) { chosen = next }
+        failures = problems(chosen)
     }
-    r.info("takes", "\(takes)", detail: "a take whose chirp a late cycle damaged is repeated, at most 3 times; the one used had \(chosen.overloads) overloads")
+    let verdict: String
+    if failures.isEmpty {
+        verdict = "passed"
+    } else if chosen.overloads == 0 {
+        verdict = "failed with no overload: a loopback fault"
+    } else {
+        verdict = "every take failed and had overloads"
+    }
+    r.check("takes", failures.isEmpty, "\(takes)", detail: "the take used \(verdict); it had \(chosen.overloads) overloads")
 
     r.check("buffer.duette", Device.bufferFrameSize(duette) == buffer, "\(Device.bufferFrameSize(duette) ?? 0) frames")
     r.check("buffer.sink", Device.bufferFrameSize(sink) == buffer, "\(Device.bufferFrameSize(sink) ?? 0) frames")
@@ -219,14 +245,14 @@ func runLoopback(_ ctx: Context) throws {
     } else {
         r.check("sample-offset", false, "chirp not found")
     }
-    let limit = Double(2 * Int(buffer) + 64)
     // The delay an app recording "Duette" sees: from the writer's IOProc call that produced a
     // frame to the reader's call that got it, averaged over the chirp. The worst single frame adds
-    // the jitter of when the HAL wakes the two I/O threads.
+    // the jitter of when the HAL wakes the two I/O threads, which on the CI machine is not stable
+    // enough to gate.
     if let worst = result.latencyMax, let mean = result.latencyMean {
         r.check("latency", mean <= limit, Format.frames(mean, sampleRate: rate),
-                detail: String(format: "mean over the chirp, writer IOProc call to reader IOProc call; limit 2 x %ld + 64 = %.0f",
-                               Int(buffer), limit))
+                detail: String(format: "mean over the chirp, writer IOProc call to reader IOProc call; limit: the HAL's %.0f + 16 = %.0f",
+                               reported, limit))
         r.info("latency.worst", Format.frames(worst, sampleRate: rate), detail: "the latest single frame of the chirp")
     } else {
         r.check("latency", false, "not measured")

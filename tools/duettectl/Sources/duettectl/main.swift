@@ -59,7 +59,7 @@ let commands: [(CommandSpec, CommandBody)] = [
     (CommandSpec("rate-mismatch", summary: "verify-mix with the test speaker (and so the tap) at 44.1 kHz"),
      { try runVerifyMix($0, speakerRate: 44100) }),
     (CommandSpec("dcli", summary: "'dcli' lists a reader of \"Duette\" that reads it through an aggregate or VPIO",
-                 options: [OptionSpec("mode", valueName: "MODE", help: "direct, aggregate or vpio", default: "aggregate")]),
+                 options: [OptionSpec("mode", valueName: "MODE", help: "direct, aggregate, vpio, or concurrent (two direct readers)", default: "aggregate")]),
      runDcli),
     (CommandSpec("feedback-loop", summary: "a tapped process that also reads \"Duette\" sets off the feedback-loop detector",
                  options: [.flag("controller", help: "also check EngineController's status (needs a working tap)")]),
