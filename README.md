@@ -2,21 +2,21 @@
 
 Duette mixes the sound of one app, for example a Discord call, with your microphone, and shows the result to other apps as a microphone called "Duette". Pick "Duette" as the microphone in OBS, Zoom or QuickTime and they get you and the caller together, in sync. You keep hearing the call in your headphones as usual.
 
-It runs from the menu bar, is built for low delay (the goal is under 20 ms), and is free software under the GPL-3.0.
+It runs from the menu bar, is built to add very little delay (the goal is under 20 milliseconds), and is free software under the GPL-3.0.
 
 ## What you need
 
-- A Mac with Apple silicon (M1 or newer). Intel Macs are not supported.
+- A Mac with an Apple chip (M1 or newer). Macs with an Intel processor don't work.
 - macOS 14.2 or newer. The first round of hands-on testing is on macOS 15.
 - Headphones. Without them the speakers will play the call into your microphone.
 
 ## Install
 
-1. Go to the [releases page](https://github.com/Roboroads/Duette/releases) and download `Duette-<version>.pkg` from the newest release. Early versions are marked as pre-release there. That is expected.
-2. Double-click the pkg and follow the installer. There are no choices to make, and it asks for your password.
-3. The sound on your Mac pauses for a second or two while the audio system restarts. Then the Duette icon (a circle with a sound wave) appears at the top of your screen and a welcome guide opens.
+1. Go to the [releases page](https://github.com/Roboroads/Duette/releases) and download the file that ends in `.pkg` from the newest release. Early versions are labelled "Pre-release" there. That is expected.
+2. Open the file you downloaded and follow the installer. There is nothing to choose, and it asks for your Mac's password.
+3. Sound on your Mac pauses for a second or two while the installer finishes. Then the Duette icon (a circle with a sound wave) appears at the top of your screen and a welcome guide opens.
 
-Release builds are signed and notarized by Apple, so macOS opens them without a warning. A test build may not be. If macOS says it can't open or check the pkg, close the message, open System Settings, then Privacy & Security, scroll down to the message about the pkg and click "Open Anyway". Then open the pkg again.
+Normal releases are checked by Apple, so macOS opens the installer without a warning. A test version may not be. If macOS says it can't open the file or can't check it, close the message, open System Settings, then Privacy & Security, scroll down to the message about the installer and click "Open Anyway". Then open the file again.
 
 ## First run
 
@@ -49,7 +49,7 @@ If you only want your voice, choose "No app, only my microphone".
 - "Your microphone": which microphone, its volume, "Mute" and a level bar. "System default" follows whatever your Mac uses.
 - "What other apps hear": the volume, mute and level of the mix.
 - "Open Duette when I log in".
-- "For experts": the buffer size (64, 128, 256 or 512 frames, 128 by default), an estimate of the delay, a count of missed deadlines, and two test tones.
+- "For experts": settings most people never need. The buffer size, an estimate of the delay, a count of missed deadlines and two test tones.
 - "Export Diagnostics…", "Show the welcome guide", "About Duette" and "Quit Duette".
 
 Mute and the volumes only change what goes into "Duette". What you hear yourself never changes.
@@ -60,14 +60,14 @@ If you can't see the menu bar icon (a full menu bar, or the notch is in the way)
 
 | What you see | What to do |
 |---|---|
-| "Duette" is not in the microphone list of OBS or Zoom | Open System Settings, then Sound, then Input. If it isn't there, restart the Mac, or run the installer again. |
+| "Duette" is not in the microphone list of OBS or Zoom | Open System Settings, then Sound. If "Duette" isn't under Input, restart the Mac, or open the installer file again. |
 | "Duette needs permission to hear (app)" | Click "Open Settings". Scroll to "System Audio Recording Only" and switch Duette on. |
 | "Duette needs permission to use your microphone" | Click "Open Microphone Settings" and switch Duette on. |
 | "Your microphone isn't connected" | Plug it in, or choose another one. Duette picks it up again by itself. |
 | Callers hear themselves | An orange warning in the menu names the app. In that app, choose your real microphone instead of "Duette". |
-| Anything else | Click "Export Diagnostics…", save the zip and send it to whoever is helping you. It has details about your audio devices and Duette's own log, and no audio. |
+| Anything else | Right after it happens, click "Export Diagnostics…", save the file and send it to whoever is helping you. It has details about your audio devices and Duette's own log from the last half hour, and no audio. |
 
-If the app won't open at all, run this in Terminal and send the zip it puts on your Desktop:
+If Duette won't open at all, open Terminal (press Command and Space, type Terminal, press Return), paste this and press Return, and send the file it puts on your Desktop:
 
 ```sh
 sudo "/Library/Application Support/Duette/duette-diagnose.sh"
@@ -75,24 +75,24 @@ sudo "/Library/Application Support/Duette/duette-diagnose.sh"
 
 ## Uninstall
 
-Open Terminal and run:
+Open Terminal (press Command and Space, type Terminal, press Return), paste this and press Return:
 
 ```sh
 sudo "/Library/Application Support/Duette/uninstall.sh"
 ```
 
-It quits Duette, removes the app, the audio driver and its support folder, and restarts the audio system, which pauses sound for a moment. Your Duette settings stay in `~/Library/Preferences`, so a later reinstall keeps them.
+It asks for your password, quits Duette and removes the app and the part that adds the "Duette" microphone to your Mac. Sound pauses for a moment. Your Duette settings stay in `~/Library/Preferences`, so a later reinstall keeps them.
 
 ## Known limitations
 
 - One app at a time. You can't share two apps together.
-- "Duette" is 48 kHz stereo only. Other apps convert to that on their own. Your microphone is mixed down to mono and sent equally to the left and right side.
-- No effects: no equaliser, noise reduction or compressor. Volumes go up to 200% (+6 dB) and anything past full scale is clipped.
-- Apple silicon and macOS 14.2 or newer only.
-- macOS has no way to ask whether the "System Audio Recording" permission was given. If it wasn't, the app's sound arrives as silence. Duette notices after a few seconds and tells you.
-- Whenever Duette rebuilds its audio path, there is a gap of a fraction of a second. That happens when the shared app starts or stops helper processes (Discord does this when a call starts), when you change the app, microphone or buffer size, when a microphone is plugged or unplugged, and after sleep.
-- No automatic updates. To update, install the newer pkg over the old one.
-- The delay is designed to be about 10 to 12 ms at the default buffer size. The first measurements on a real Mac are part of the hands-on test in [docs/TESTING.md](docs/TESTING.md).
+- Apple chip and macOS 14.2 or newer only.
+- No sound effects: no equaliser or noise reduction.
+- Sound can cut out for a fraction of a second when you change the app or the microphone, plug a microphone in or out, a call starts, or your Mac wakes up.
+- If you don't give Duette the permission to hear other apps, their sound arrives as silence. Duette notices after a few seconds and tells you.
+- No automatic updates. To update, download the newer installer file and open it. It replaces the old version.
+
+The technical limits are listed under "For developers".
 
 ## Privacy
 
@@ -125,7 +125,7 @@ On Linux you can build and test `core/` and the driver's unit tests (they use no
 
 ```sh
 scripts/ci/test-core.sh plain
-cmake -S driver -B build/driver-tests
+cmake -S driver -B build/driver-tests -DDUETTE_DRIVER_BUILD_TESTS=ON
 cmake --build build/driver-tests
 ctest --test-dir build/driver-tests
 ```
@@ -168,6 +168,16 @@ sudo scripts/uninstall.sh
 | Everything that needs a person, a microphone and Discord | [docs/TESTING.md](docs/TESTING.md) | A real Mac |
 
 `duettectl` is also installed with the pkg, at `/Library/Application Support/Duette/duettectl`. Its commands are listed in [tools/duettectl/README.md](tools/duettectl/README.md).
+
+### Technical limits
+
+- "Duette" is 48 kHz stereo only. Other apps convert to that on their own. The microphone is mixed down to mono and sent equally to the left and right side.
+- Volumes go up to 200% (+6 dB). Anything past full scale is hard-clipped. There are no effects.
+- macOS has no way to ask whether System Audio Recording was allowed. A denied tap delivers exact zeros, and the app calls it denied after more than 3 seconds of them while the shared app is playing and the tap has never carried sound.
+- Every rebuild of the audio path leaves a gap of a fraction of a second. The triggers are listed in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- Nothing resamples except the drift compensation of the aggregate device. CI checks a tap at 44.1 kHz (`duettectl rate-mismatch`), not a microphone at another rate.
+- The delay is designed to be about 10 to 12 ms at 128 frames. The first measurements on a real Mac are part of the hands-on test in [docs/TESTING.md](docs/TESTING.md).
+- arm64 only, not sandboxed, not on the App Store, no updater.
 
 ### Contributing and releasing
 
