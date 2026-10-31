@@ -1,6 +1,6 @@
 # Duette hands-on test
 
-Three days on one Mac, in order. Each step says what to do, what you should see, and what to send back if it doesn't happen. Stop at the first step that fails and send what it asks for before going on, because later steps build on earlier ones and a failure far down is usually a failure further up.
+Three days on one Mac, in order. Each step says what to do, what you should see, and what to send back if it doesn't happen. Steps 1.1 to 1.8 build on each other, so if one of them fails, stop there, send what it asks for and wait for a fix, because a failure further down is usually a failure further up. From 1.9 on the steps stand on their own: if one fails, send what it asks for, write it down and carry on with the next one.
 
 This file is attached to every Duette release. It matches the app as built, so the names in quotes are what is on screen.
 
@@ -13,13 +13,15 @@ This file is attached to every Duette release. It matches the app as built, so t
 - Optional: a USB or Bluetooth microphone (step 2.4), and Terminal (steps 1.4 and 2.11).
 - A notes file open next to you. Write the step number and what happened for anything odd, even if the step passed.
 
-Download `Duette-<version>.pkg` and `TESTING.md` from the release page: https://github.com/Roboroads/Duette/releases
+Download `Duette-<version>[-test-<sha>].pkg` and `TESTING.md` from the release page: https://github.com/Roboroads/Duette/releases (a test build has the `-test-<sha>` part in its name, a normal release doesn't).
 
 ## When something fails
 
-1. In the menu bar, click the Duette icon, then "Export Diagnostics…". It takes up to a minute. Save the zip on the Desktop.
+1. Do this right after the failure, before you quit Duette or restart anything. In the menu bar, click the Duette icon, then "Export Diagnostics…". It takes up to a minute. Save the zip on the Desktop.
 2. Send the zip and the step number (for example "1.7").
 3. Add one line on what you saw instead. A screenshot helps.
+
+The zip only holds the last 30 minutes of the log and the last 60 seconds of meter readings. One exported hours later, or at the end of the day, shows your versions and devices but not what went wrong.
 
 If the app won't open at all, there is no menu to export from. Run this in Terminal instead and send the zip it puts on the Desktop:
 
@@ -52,7 +54,7 @@ These are on purpose. Don't report them.
 - "Mute" and the sliders only change what goes into "Duette". What you hear in your headphones never changes.
 - The two test tones (driver and engine) sound the same. They are both 440 Hz. What differs is the path they take.
 - There is a gap of a fraction of a second when Duette rebuilds: when the app starts or stops helper processes (Discord joining or leaving a call), when you change the app, the microphone or the buffer size, when a mic is plugged in or out, and after sleep.
-- "Duette Sink" is not in Sound settings. It is hidden on purpose. Only "Duette" should be.
+- "Duette Sink" is not in the Output list in Sound settings. It is hidden on purpose. Only "Duette" should show up, under Input.
 - Duette has no Dock icon. It lives in the menu bar.
 - One app at a time. 48 kHz stereo only.
 
@@ -72,7 +74,7 @@ About 45 minutes. Each step adds one piece, so a failure points at that piece:
 
 **Do**
 
-1. Double-click `Duette-<version>.pkg`.
+1. Double-click `Duette-<version>[-test-<sha>].pkg`.
 2. If macOS says it can't open it or can't check it for malware (this happens with test builds that are not notarized): close the message. Open System Settings, then Privacy & Security, scroll down to the message about the pkg and click "Open Anyway". Confirm with your password. Then open the pkg again.
 3. Click through the installer. There are no choices to make. Enter your password when it asks.
 
@@ -138,7 +140,7 @@ This checks the audio driver with the app out of the picture.
 
 **Do**
 
-1. Open System Settings, then Sound, then Input.
+1. Open System Settings, then Sound. Look at the Input list, then at the Output list.
 2. Open QuickTime Player, then File, then New Audio Recording. Click the small arrow next to the red record button and choose "Duette" as the Microphone. macOS may ask whether QuickTime may use the microphone. Allow it.
 3. In the Duette menu, open "For experts" and switch on "Play test tone (driver)".
 4. Click record, wait 5 seconds, stop, and play it back.
@@ -146,7 +148,7 @@ This checks the audio driver with the app out of the picture.
 
 **Expect**
 
-- "Duette" is in the Input list. "Duette Sink" is not.
+- "Duette" is in the Input list. "Duette Sink" is not in the Output list. ("Duette Sink" is an output device, so the Output list is where it would show up if it weren't hidden.)
 - The recording is a steady, fairly quiet beep, and the QuickTime level meter moves while recording.
 
 **Optional second opinion in Terminal**
@@ -155,11 +157,11 @@ This checks the audio driver with the app out of the picture.
 "/Library/Application Support/Duette/duettectl" list
 ```
 
-It prints one line per check. Expect `CHECK PASS duette.listed` and `CHECK PASS sink.hidden`, and a last line that ends in `0 failed`.
+It prints one line per check. Expect `CHECK PASS list.duette.listed` and `CHECK PASS list.sink.hidden`, and a last line that ends in `0 failed`.
 
 **If it fails**
 
-Send the diagnostics zip and the step number. Also say whether "Duette" is in the Input list, and send the Terminal output if you ran it. If "Duette" isn't in the list at all, the driver did not load: that's a bigger failure than a missing beep, say so. If this is not your first install, say what was on the Mac before.
+Send the diagnostics zip and the step number. Also say whether "Duette" is in the Input list and whether "Duette Sink" is in the Output list, and send the Terminal output if you ran it. If "Duette" isn't in the list at all, the driver did not load: that's a bigger failure than a missing beep, say so. If this is not your first install, say what was on the Mac before.
 
 ### 1.5 App, sink and driver
 
@@ -167,9 +169,10 @@ This checks the path from the Duette app to "Duette". Step 1.4 must have passed.
 
 **Do**
 
-1. In the Duette menu, under "For experts", switch on "Play test tone (engine)".
-2. Record "Duette" in QuickTime for 5 seconds and play it back.
-3. Switch the engine tone off again.
+1. In the app row, open the popup and choose "No app, only my microphone", so the sound of another app is not part of this test.
+2. In the Duette menu, under "For experts", switch on "Play test tone (engine)".
+3. Record "Duette" in QuickTime for 5 seconds and play it back.
+4. Switch the engine tone off again.
 
 **Expect**
 
@@ -184,7 +187,7 @@ Send the diagnostics zip and the step number. Say what the status line said, wor
 
 **Do**
 
-1. In the app row, open the popup and choose "No app, only my microphone".
+1. The app row should still say "No app, only my microphone" from 1.5. If not, choose it.
 2. Leave the microphone on "System default", or choose a microphone you want to test.
 3. Record "Duette" in QuickTime and talk for 5 seconds. Play it back.
 4. Click "Mute" in the "Your microphone" row (it turns into "Muted"). Record and talk again.
@@ -269,7 +272,7 @@ Send the step number and what the menu said. If it says "Duette couldn't put the
 
 **End of day 1**
 
-Send the zip from this step even if everything passed, and your notes. Quit Duette from the menu ("Quit Duette") or leave it running, whichever you like.
+Keep the zip from this step and send it with your notes, even if everything passed. It is a snapshot of versions, devices, permissions and settings on a working setup, not a record of a failure. Quit Duette from the menu ("Quit Duette") or leave it running, whichever you like.
 
 ## Day 2: the real call, recovery and edge cases
 
@@ -401,14 +404,14 @@ Send the diagnostics zip and the step number, with the size that failed and what
 2. In the Duette menu, switch on "Open Duette when I log in".
 3. If the switch is followed by "Your Mac needs your OK first. Switch Duette on in Login Items." click "Open Login Items", switch Duette on in the list that opens, and come back.
 4. Log out and log in again (Apple menu, then Log Out).
-5. In System Settings, then General, then Login Items, switch Duette off. Open the Duette menu. Switch it back on.
+5. In System Settings, then General, then Login Items & Extensions, switch Duette off. Open the Duette menu. Switch it back on.
 
 **Expect**
 
 - After logging in, the Duette icon is in the menu bar without you opening anything, and no guide window.
 - The same app, microphone, volumes and buffer size as before.
 - After step 5, the switch in the menu shows what System Settings says (off after you turned it off there), because Duette reads it each time.
-- If the switch gives "Duette couldn't change this. You can also do it in System Settings > General > Login Items.", try the Login Items way yourself, and send the zip. An unsigned test build may be the cause.
+- If the switch gives "Duette couldn't change this. You can also do it in System Settings > General > Login Items.", try the Login Items way yourself, and send the zip. An unsigned test build may be the cause. On macOS 15 that System Settings page is called "Login Items & Extensions", so the app's message and its "Open Login Items" button use an older name for it.
 
 **If it fails**
 
@@ -502,7 +505,9 @@ Send the diagnostics zip and the step number (2.10A or 2.10B). Say whether the s
 
 ### 2.11 Ten-minute soak
 
-This runs the engine for ten minutes in Terminal and checks the sound the whole time. It finds the slow failures: a dropout after five minutes, a creeping delay.
+<!-- S9: verify wording -->
+
+This runs the engine for ten minutes in Terminal and checks the sound the whole time. It finds the slow failures: a dropout after five minutes, a creeping delay. If this build has no soak mode that works on a Mac like this one, use the fallback below.
 
 **Do**
 
@@ -529,12 +534,22 @@ This runs the engine for ten minutes in Terminal and checks the sound the whole 
 
 Send the whole Terminal output (select all, copy, paste into a text file), the step number, and the diagnostics zip from Duette after you open it again.
 
+**Fallback: a 30-minute call**
+
+Use this when the command above isn't in this build, or prints `SKIP`.
+
+1. Open Duette and "For experts". Write down "Missed deadlines" (call it A).
+2. Join a Discord call with "Discord" chosen in Duette, and record "Duette" in OBS or QuickTime the whole time. Keep the Mac awake and plugged in. Talk now and then, and use the Mac as you normally would.
+3. After 30 minutes, write down "Missed deadlines" again (call it B), and play the recording back, skimming through it.
+
+Expect B to be the same as A, no dropouts or crackle in the recording, and a green status line the whole time. If B is higher, export diagnostics straight away, and send it with A, B and what you were doing.
+
 ### 2.12 End of day 2
 
 **Do**
 
 1. Open "For experts" and write down "Missed deadlines" after the day's use.
-2. Export Diagnostics and keep the zip.
+2. Export Diagnostics and keep the zip. Like the one from day 1, it is a snapshot of versions, devices and settings, not a record of a failure.
 3. Shut the Mac down (Apple menu, then Shut Down), not sleep. You'll start day 3 from a cold boot.
 
 **Send**
@@ -562,7 +577,7 @@ Send the diagnostics zip and the step number, and say how you started Duette if 
 
 ### 3.2 Install the fixed build and retest
 
-Skip this if there is no new build. If there is one, you'll have a new `Duette-<version>.pkg` and a list of failed steps.
+Skip this if there is no new build. If there is one, you'll have a new `Duette-<version>[-test-<sha>].pkg` and a list of failed steps.
 
 **Do**
 
@@ -639,14 +654,14 @@ Send the diagnostics zip and the step number. Say which line in this list didn't
 sudo "/Library/Application Support/Duette/uninstall.sh"
 ```
 
-2. Check System Settings, then Sound, then Input, the Applications folder, the menu bar, and System Settings, then General, then Login Items.
+2. Check System Settings, then Sound, then Input, the Applications folder, the menu bar, and System Settings, then General, then Login Items & Extensions.
 3. Optional: download `uninstall.sh` from the release page and run it with `sudo bash ~/Downloads/uninstall.sh`.
 
 **Expect**
 
 - It asks for your password if you didn't use `sudo`. It prints `Removed /Applications/Duette.app`, `Removed /Library/Audio/Plug-Ins/HAL/Duette.driver`, `Removed /Library/Application Support/Duette`, `Forgot installer receipt me.roboroads.duette.pkg`, `Restarting the audio system.` and ends with `Duette is removed.`
 - Audio pauses for a moment.
-- The Duette icon is gone from the menu bar, "Duette" is gone from Sound settings, and there is no Duette in Applications. Write down whether Duette is still listed under Login Items.
+- The Duette icon is gone from the menu bar, "Duette" is gone from Sound settings, and there is no Duette in Applications. Write down whether Duette is still listed under Login Items & Extensions.
 - The second run, from the downloaded copy, prints `Not installed:` for each path and ends with `Duette is removed.` Your Duette preferences stay on the Mac on purpose.
 
 **If it fails**
@@ -655,7 +670,8 @@ Send the whole Terminal output and the step number. If Duette is still in Sound 
 
 ### 3.6 Send everything back
 
-- The diagnostics zips from the end of days 1 and 2, and from step 3.3.
+- The zips you made right after failures, if there were any.
+- The snapshot zips from the end of day 1, the end of day 2 and after step 3.3.
 - Your notes, with the table from 3.2.
 - Which Mac it was (the model is in the zip) and which macOS.
 - The version from "About Duette".
