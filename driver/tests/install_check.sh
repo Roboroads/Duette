@@ -49,9 +49,11 @@ audio_devices() {
 }
 
 wait_for_device_name() { # name, seconds
-  local _
+  local _ names
   for _ in $(seq 1 "$2"); do
-    if audio_devices | grep -Fxq "$1"; then
+    # Captured first: with pipefail, grep -q exiting early would fail the pipeline.
+    names=$(audio_devices)
+    if grep -Fxq "$1" <<<"$names"; then
       return 0
     fi
     sleep 1
@@ -68,17 +70,17 @@ wait_for_device_name Duette 30 || true
 devices=$(audio_devices)
 echo "$devices"
 echo "::endgroup::"
-if echo "$devices" | grep -Fxq Duette; then
+if grep -Fxq Duette <<<"$devices"; then
   echo "PASS system_profiler lists Duette"
 else
   fail "system_profiler does not list Duette"
 fi
-if echo "$devices" | grep -Fq 'Duette Sink'; then
+if grep -Fq 'Duette Sink' <<<"$devices"; then
   fail "system_profiler lists Duette Sink, which should be hidden"
 else
   echo "PASS system_profiler does not list Duette Sink"
 fi
-if echo "$devices" | grep -Fq 'Duette Test'; then
+if grep -Fq 'Duette Test' <<<"$devices"; then
   fail "the shippable plug-in publishes test devices"
 fi
 
@@ -93,7 +95,7 @@ wait_for_device_name 'Duette Test Speaker' 30 || true
 devices=$(audio_devices)
 echo "$devices"
 for name in 'Duette Test Mic' 'Duette Test Speaker'; do
-  if echo "$devices" | grep -Fxq "$name"; then
+  if grep -Fxq "$name" <<<"$devices"; then
     echo "PASS system_profiler lists $name"
   else
     fail "system_profiler does not list $name"

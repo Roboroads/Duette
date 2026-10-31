@@ -34,8 +34,9 @@ mkdir -p "$out_dir" "$test_out_dir"
 configure() { # build dir, extra args...
   local dir=$1
   shift
-  # -Wno-dev: libASPL's CMake trips policy warnings (CMP0175) that are not ours to fix.
-  cmake -S "$repo_root/driver" -B "$dir" -Wno-dev \
+  # CMP0175: libASPL's add_custom_command calls trip it on CMake 3.31+; not ours to fix.
+  cmake -S "$repo_root/driver" -B "$dir" \
+    -DCMAKE_POLICY_DEFAULT_CMP0175=OLD \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=14.2 \
@@ -86,12 +87,17 @@ publish() { # source bundle, destination dir, "ship" or "test"
     echo "build-driver.sh: $binary is '$(lipo -archs "$binary")', want arm64" >&2
     exit 1
   fi
-  if ! nm -gU "$binary" | grep -q ' _DuetteDriverEntryPoint$'; then
+  # Capture first: `grep -q` exits at the first match, and with pipefail the writer's broken
+  # pipe would fail the check.
+  local exported text
+  exported=$(nm -gU "$binary")
+  text=$(strings "$binary")
+  if ! grep -q ' _DuetteDriverEntryPoint$' <<<"$exported"; then
     echo "build-driver.sh: $binary does not export DuetteDriverEntryPoint" >&2
     exit 1
   fi
   # Test devices must never reach a shippable bundle, and must be in the test one.
-  if strings "$binary" | grep -q 'Duette Test Mic'; then
+  if grep -q 'Duette Test Mic' <<<"$text"; then
     [ "$kind" = test ] || { echo "build-driver.sh: $dest contains the test devices" >&2; exit 1; }
   else
     [ "$kind" = ship ] || { echo "build-driver.sh: $dest lacks the test devices" >&2; exit 1; }
