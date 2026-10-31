@@ -114,7 +114,7 @@ final class AppModelTests: XCTestCase {
     // MARK: Restoring a choice that is not there
 
     func testARestoredAppThatIsNotRunningShowsWaiting() {
-        let settings = world.makeSettings()
+        let settings = world.settingsOfAnEarlierLaunch()
         settings.appBundleID = "com.example.Gone"
         let model = world.makeModel(settings: settings)
         model.start()
@@ -125,7 +125,7 @@ final class AppModelTests: XCTestCase {
     }
 
     func testTheRestoredAppIsPickedUpWhenItStarts() {
-        let settings = world.makeSettings()
+        let settings = world.settingsOfAnEarlierLaunch()
         settings.appBundleID = World.discord
         let model = world.makeModel(settings: settings)
         model.start()
@@ -140,7 +140,7 @@ final class AppModelTests: XCTestCase {
 
     func testARestoredMicThatIsMissingShowsItAndComesBackWithTheSameUID() {
         world.launchMusic()
-        let settings = world.makeSettings()
+        let settings = world.settingsOfAnEarlierLaunch()
         settings.appBundleID = World.music
         settings.mic = .device(uid: "Headset")
         let model = world.makeModel(settings: settings)
@@ -161,7 +161,7 @@ final class AppModelTests: XCTestCase {
     func testChangingTheAppRebuildsTheEngineForTheNewApp() {
         world.launchDiscord()
         world.launchMusic()
-        let settings = world.makeSettings()
+        let settings = world.settingsOfAnEarlierLaunch()
         settings.appBundleID = World.discord
         let model = world.makeModel(settings: settings)
         model.start()
@@ -175,7 +175,7 @@ final class AppModelTests: XCTestCase {
 
     func testChoosingNoAppMixesOnlyTheMicrophone() {
         world.launchDiscord()
-        let settings = world.makeSettings()
+        let settings = world.settingsOfAnEarlierLaunch()
         settings.appBundleID = World.discord
         let model = world.makeModel(settings: settings)
         model.start()
@@ -224,7 +224,7 @@ final class AppModelTests: XCTestCase {
 
     func testTheAppSoundStepStartsTheEngineSoMacOSAsks() {
         world.launchDiscord()
-        let settings = world.makeSettings()
+        let settings = world.settingsOfAnEarlierLaunch()
         settings.appBundleID = World.discord
         let model = world.makeModel(settings: settings, onboardingDone: false)
         model.start()
@@ -295,7 +295,7 @@ final class AppModelTests: XCTestCase {
 
     func testTheFeedbackLoopWarningNamesTheApp() {
         world.launchDiscord()
-        let settings = world.makeSettings()
+        let settings = world.settingsOfAnEarlierLaunch()
         settings.appBundleID = World.discord
         let model = world.makeModel(settings: settings)
         model.start()

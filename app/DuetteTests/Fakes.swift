@@ -281,8 +281,16 @@ final class World {
         audio.processList.append(AudioProcessInfo(objectID: 210, pid: 300, bundleID: World.music, isRunningOutput: true))
     }
 
+    /// Settings as the app opens them: the very first one on a fresh suite is a first run.
     func makeSettings() -> Settings {
         Settings(defaults: defaults)
+    }
+
+    /// Settings of a later launch, for tests that need stored choices: the first launch (and its
+    /// first-run defaults) has happened already.
+    func settingsOfAnEarlierLaunch() -> Settings {
+        _ = Settings(defaults: defaults)
+        return Settings(defaults: defaults)
     }
 
     var services: AppServices {
