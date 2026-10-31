@@ -132,6 +132,7 @@ jobs:
           MACOS_CERT_INSTALLER_P12_BASE64: ${{ secrets.MACOS_CERT_INSTALLER_P12_BASE64 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           MACOS_CERT_INSTALLER_PASSWORD: ${{ secrets.MACOS_CERT_INSTALLER_PASSWORD }}
+          DUETTE_REQUIRE_INSTALLER: ${{ !inputs.publish_unsigned }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/sign.sh import-certs
 

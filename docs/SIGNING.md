@@ -17,7 +17,7 @@ Apple wants three things before a Mac opens an installer without complaining:
 2. The installer itself is signed with a **Developer ID Installer** certificate.
 3. Apple has scanned the installer and stamped it (notarization). This needs an **App Store Connect API key**.
 
-You end up with these values stored as GitHub repo secrets (seven normally; five if one `.p12` holds both certificates):
+You end up with these values stored as GitHub repo secrets (seven normally; six if one `.p12` holds both certificates):
 
 | Secret | What it is |
 |---|---|
@@ -79,7 +79,7 @@ Type the password and press Enter (nothing is shown). Drop `-legacy` if the firs
 
 You can make the other certificate from the **same private key** that is in your `.p12`, so you do not need a second key. Only the Account Holder can create Developer ID certificates (see "Before you start").
 
-1. Take the key out of the `.p12` (add or drop `-legacy` as before). This writes an unencrypted key file, so keep it private and delete it when you are done:
+1. Take the key out of the `.p12` (add or drop `-legacy` as before). If you opened a new terminal since the check above, set the password variable again first with `read -rs P12_PASSWORD && export P12_PASSWORD`. This writes an unencrypted key file, so keep it private and delete it when you are done:
 
    ```sh
    openssl pkcs12 -legacy -in yours.p12 -nocerts -nodes -passin env:P12_PASSWORD | openssl pkey -out duette-signing.key
@@ -113,6 +113,7 @@ You can make the other certificate from the **same private key** that is in your
 Normally you can skip this, since a `.p12` from Keychain Access is what macOS expects. If the check in step 7 fails on the import with `MAC verification failed during PKCS12 import` and you are sure the password is right, make a fresh copy of a `.p12` that holds a single identity:
 
 ```sh
+read -rs P12_PASSWORD && export P12_PASSWORD
 read -rs NEW_P12_PASSWORD && export NEW_P12_PASSWORD
 openssl pkcs12 -legacy -in yours.p12 -nodes -passin env:P12_PASSWORD \
   | openssl pkcs12 -export -legacy -passout env:NEW_P12_PASSWORD -out yours-reexported.p12
@@ -238,10 +239,10 @@ On a Mac, `base64 -w0 file` becomes `base64 -i file`.
 
 On Path A, adjust the first three lines to what you have:
 
-- One `.p12` with both certificates: set `MACOS_CERT_APP_P12_BASE64` (from that file) and `MACOS_CERT_PASSWORD`, and skip the Installer line. That leaves five secrets.
+- One `.p12` with both certificates: set `MACOS_CERT_APP_P12_BASE64` (from that file) and `MACOS_CERT_PASSWORD`, and skip the Installer line. That leaves six secrets.
 - Two `.p12` files with different passwords: set `MACOS_CERT_PASSWORD` to the Application password and add the Installer one with `printf '%s' "$INSTALLER_PASSWORD" | gh secret set MACOS_CERT_INSTALLER_PASSWORD --repo "$REPO"`. Without that secret, the Installer file is opened with `MACOS_CERT_PASSWORD`.
 
-Check that they are all there (seven normally, five or six on Path A):
+Check that they are all there (seven normally, six or seven on Path A):
 
 ```sh
 gh secret list --repo "$REPO"
@@ -286,7 +287,7 @@ Once the real app and driver exist, a test build on your own branch does the sam
 
 The certificates are valid for about five years, then you repeat this page. If you want to skip steps 1 to 3 next time, keep `duette-signing.key` (or your original `.p12`) and the `.p12` files in a password manager. Never commit any of these files.
 
-When all seven secrets are set and the check passed, delete the working folder:
+When all the secrets are set and the check passed, delete the working folder:
 
 ```sh
 cd .. && rm -rf duette-signing

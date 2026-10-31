@@ -30,6 +30,8 @@
 #                                    build fails unless it exists, sets
 #                                    com.apple.security.device.audio-input and has no
 #                                    com.apple.security.get-task-allow.
+#   DUETTE_REQUIRE_INSTALLER         "true": fail instead of warning when the Application
+#                                    .p12 is given but no Installer identity can be found
 #   DUETTE_OUT_DIR                   where the products are (default build/out)
 #   DUETTE_KEYCHAIN                  path of the temporary keychain
 #
@@ -176,7 +178,14 @@ cmd_import_certs() {
     die "no 'Developer ID Installer' identity found after the import. Check the Installer .p12 and APPLE_TEAM_ID."
   fi
   if [ -z "${MACOS_CERT_INSTALLER_P12_BASE64:-}" ] && [ -z "$(installer_identity)" ]; then
-    echo "Note: no 'Developer ID Installer' identity in the Application .p12 and no Installer .p12 given, so the pkg will be unsigned."
+    local msg="no 'Developer ID Installer' identity in the Application .p12 and no Installer .p12 given, so the pkg would be unsigned."
+    if [ "${DUETTE_REQUIRE_INSTALLER:-}" = "true" ]; then
+      die "$msg Set MACOS_CERT_INSTALLER_P12_BASE64 or put the Installer certificate in the Application .p12 (docs/SIGNING.md)."
+    elif [ -n "${GITHUB_ACTIONS:-}" ]; then
+      echo "::warning::$msg"
+    else
+      echo "Note: $msg"
+    fi
   fi
 }
 

@@ -193,6 +193,14 @@ jobs:
           fi
           bash scripts/sign.sh cleanup
 
+          echo "--- An Application-only .p12 is refused when the Installer is required"
+          if DUETTE_REQUIRE_INSTALLER=true MACOS_CERT_APP_P12_BASE64="$(cat "$ids/application.p12.b64")" MACOS_CERT_PASSWORD="$password" \
+            bash scripts/sign.sh import-certs; then
+            echo "::error::import-certs accepted an Application-only .p12 with DUETTE_REQUIRE_INSTALLER=true"
+            exit 1
+          fi
+          bash scripts/sign.sh cleanup
+
           echo "--- Back to the standard certificates for the steps below"
           MACOS_CERT_APP_P12_BASE64="$(cat "$ids/application.p12.b64")" MACOS_CERT_INSTALLER_P12_BASE64="$(cat "$ids/installer.p12.b64")" MACOS_CERT_PASSWORD="$password" \
             bash scripts/sign.sh import-certs
