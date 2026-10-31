@@ -319,8 +319,8 @@ func runConcurrentReaders(_ r: Reporter, me: pid_t) throws {
     let app = try ReaderProcess(mode: "aggregate", playHz: 440)
     defer { app.stop() }
     let joined = waitUntil(10, interval: 0.1) { readers().contains(app.pid) }
-    r.info("concurrent.aggregate-second", "\(joined ? "found" : "not found"): \(describeClients(readers()))",
-           detail: "a reader that joins through its own private aggregate; HAL: \(halView(of: app.pid))")
+    r.check("concurrent.aggregate-second", joined, describeClients(readers()),
+            detail: "a reader that joins through its own private aggregate (\(app.pid)); HAL: \(halView(of: app.pid))")
     app.stop()
     own.stop()
     let empty = waitUntil(5, interval: 0.05) { clients().isEmpty }
