@@ -285,7 +285,7 @@ phase_blocking() {
 phase_hands_on_smoke() {
   local file=$out/hands-on-soak.txt rc=0 ok=1 verdict name st
   rm -f "$file"
-  run_cmd blocking hands-on-soak 240 "plumbing control.default-output 128.signal 64.signal 128.windows 64.windows 128.drift 128.latency.matches-estimate 64.latency.matches-estimate" \
+  run_cmd blocking hands-on-soak 400 "plumbing control.default-output 128.signal 64.signal 128.sound 128.windows 64.windows 128.drift 128.latency.matches-estimate 64.latency.matches-estimate" \
     -- soak --hands-on --minutes 0.25 --mic me.roboroads.duette.test-mic --out "$file" || rc=$?
   verdict=$(head -n 1 "$file" 2>/dev/null || true)
   [ "$rc" -le 1 ] || ok=0

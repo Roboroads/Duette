@@ -19,23 +19,56 @@ func runSoak(_ ctx: Context) throws {
     var notes: [String] = []
     let started = Date()
 
+    // The file first, so a soak that cannot write its result says so now and not after 20 minutes.
+    let outPath = plan.outPath.flatMap { prepareResultFile($0, started: started) }
+    if plan.real {
+        let minutes = Int((plan.minutes * Double(plan.buffers.count) + plan.controlSeconds / 60 + 1).rounded(.up))
+        print("Keep sound going near the microphone the whole time: play music near the Mac, or keep talking. "
+            + "This takes about \(minutes) minutes.")
+    }
+
     do {
         try soak(ctx, plan, notes: &notes)
     } catch {
         r.record("error", .fail, "\(error)", detail: "at: \(Stage.value)")
     }
 
-    let verdict = plan.verdict(r.checks)
-    print(verdict)
-    if let path = plan.outPath {
+    var written: String?
+    if let path = outPath {
         let text = plan.report(header: soakHeader(plan, started: started), checks: r.checks, notes: notes)
         do {
             try text.write(toFile: path, atomically: true, encoding: .utf8)
-            print("Send this file: \(path)")
+            written = path
         } catch {
             r.record("out", .fail, "could not write \(path)", detail: "\(error)")
         }
     }
+    // The verdict last, once the file holds it too.
+    print(plan.verdict(r.checks))
+    if let written { print("Send this file: \(written)") }
+    let status = plan.exitStatus(r.checks)
+    if status == 2 {
+        fflush(stdout)
+        exit(2)
+    }
+}
+
+/// Creates the result file (or one of the same name in the current folder if that fails) and
+/// returns where it is, or nil if neither can be written.
+private func prepareResultFile(_ path: String, started: Date) -> String? {
+    let placeholder = "Duette soak started \(ISO8601DateFormatter().string(from: started)); "
+        + "if this is all there is, it did not finish.\n"
+    func tryWrite(_ path: String) -> Bool {
+        (try? placeholder.write(toFile: path, atomically: true, encoding: .utf8)) != nil
+    }
+    if tryWrite(path) { return path }
+    let fallback = FileManager.default.currentDirectoryPath + "/" + URL(fileURLWithPath: path).lastPathComponent
+    if fallback != path, tryWrite(fallback) {
+        print("Cannot write \(path); the result goes to \(fallback) instead.")
+        return fallback
+    }
+    print("Cannot write \(path) or \(fallback): the result is only shown here.")
+    return nil
 }
 
 private func soak(_ ctx: Context, _ plan: SoakPlan, notes: inout [String]) throws {
@@ -95,6 +128,22 @@ private func controlRun(_ r: Reporter, seconds: Double, buffer: UInt32) -> [Stri
            detail: String(format: "'%@' at %u frames, an IOProc that plays silence: late cycles this Mac has without Duette (%.1f per minute)",
                           name, buffer, Double(count) / seconds * 60))
     return ["control: \(count) late cycles in \(Int(seconds)) s on '\(name)'"]
+}
+
+/// The longest run of exact zeros (both channels) the mic itself delivered over the 1.1 s that
+/// went into the "Duette" second just read. `duetteBehind`: frames "Duette" has recorded past the
+/// end of that second. Nil if the mic's recording no longer holds that time.
+private func micZeroRun(_ mic: Recorder, duetteBehind: UInt64) -> Int? {
+    let rate = mic.sampleRate
+    let span = Int(1.1 * rate)
+    let behind = Double(duetteBehind) * rate / Device.sampleRate
+    let end = Double(mic.frames) - behind
+    guard end > Double(span), Double(mic.frames) - end + Double(span) < Double(mic.capacity - 1024) else { return nil }
+    let stereo = mic.copy(from: UInt64(end) - UInt64(span), count: span)
+    guard stereo.count == span * 2 else { return nil }
+    var louder = [Float](repeating: 0, count: span)
+    for i in 0..<span { louder[i] = max(abs(stereo[2 * i]), abs(stereo[2 * i + 1])) }
+    return SignalStats(louder).longestZeroRun
 }
 
 /// Sample time and host time of a running device now.
@@ -172,20 +221,32 @@ private func soakOnce(_ ctx: Context, _ plan: SoakPlan, buffer: UInt32, duette: 
     defer { recorder.stop() }
     recorder.waitForFrames(48000, timeout: 5)
 
-    // Something must come through at all: only silence means this process may not record.
-    let first = recorder.take(seconds: 1, settle: 0.2)
-    let heard = SignalStats(first).peak > 0
-    r.check(prefix + "signal", heard, String(format: "peak %.4f", SignalStats(first).peak),
-            detail: heard ? "sound from Duette" : "only silence from Duette: if macOS asked whether Terminal may use the microphone, "
-                + "allow it (System Settings > Privacy & Security > Microphone), make some noise, and run this again")
-    guard heard else { return notes }
+    // Something must come through at all. Only silence means this process may not record, or
+    // (with a real mic) that the room is quiet: then nothing can be tested.
+    var first = recorder.take(seconds: 1, settle: 0.2)
+    if plan.real {
+        let deadline = Date().addingTimeInterval(15)
+        while SignalStats(first).peak == 0, Date() < deadline { first = recorder.take(seconds: 1, settle: 0) }
+    }
+    let peak = SignalStats(first).peak
+    let silenceHelp = "only silence from Duette: if macOS asked whether Terminal may use the microphone, allow it "
+        + "(System Settings > Privacy & Security > Microphone)"
+    if peak > 0 {
+        r.check(prefix + "signal", true, String(format: "peak %.4f", peak), detail: "sound from Duette")
+    } else if plan.real {
+        r.skip(prefix + "signal", "only silence for 15 s", detail: silenceHelp)
+        return notes
+    } else {
+        r.check(prefix + "signal", false, "peak 0", detail: silenceHelp)
+        return notes
+    }
 
     // The clocks of "Duette" (it shares the sink's) and the mic, for the drift between them. A
     // device's current time can be read only while this process runs IO on it itself, so a small
     // recorder runs on the mic as well.
     let micID = status.micUID.flatMap { Device.find(uid: $0) }
     var micClock: Recorder?
-    if let micID, let clock = try? Recorder(device: micID, seconds: 1, sampleRate: Device.nominalRate(micID) ?? Device.sampleRate) {
+    if let micID, let clock = try? Recorder(device: micID, seconds: 4, sampleRate: Device.nominalRate(micID) ?? Device.sampleRate) {
         do {
             try clock.start()
             clock.waitForFrames(4800, timeout: 3)
@@ -207,7 +268,8 @@ private func soakOnce(_ ctx: Context, _ plan: SoakPlan, buffer: UInt32, duette: 
     var cursor = recorder.frames
     let soakStart = Date()
     let total = plan.minutes * 60
-    var windows = 0, failedWindows = 0, silentWindows = 0, unexplained = 0, longestZeroRun = 0
+    var windows = 0, failedWindows = 0, silentWindows = 0, micZeroWindows = 0, soundWindows = 0
+    var unexplained = 0, longestZeroRun = 0
     var worstDB = 0.0, worstHz = 0.0
     var firstFailure: String?
     var failed: [(end: Date, what: String)] = []
@@ -228,11 +290,16 @@ private func soakOnce(_ ctx: Context, _ plan: SoakPlan, buffer: UInt32, duette: 
         let at = Int(Date().timeIntervalSince(soakStart))
         var bad: String?
         if plan.real {
-            switch SoakPlan.classify(peak: stats.peak, longestZeroRun: stats.longestZeroRun) {
+            if SoakPlan.hasSound(zeros: stats.zeros, frames: samples.count) { soundWindows += 1 }
+            let micRun = stats.longestZeroRun >= SoakPlan.dropoutFrames
+                ? micClock.flatMap { micZeroRun($0, duetteBehind: recorder.frames - cursor) } : nil
+            switch SoakPlan.classify(peak: stats.peak, longestZeroRun: stats.longestZeroRun, micLongestZeroRun: micRun) {
             case .sound:
                 longestZeroRun = max(longestZeroRun, stats.longestZeroRun)
             case .silent:
                 silentWindows += 1
+            case .micZeros:
+                micZeroWindows += 1
             case .dropout:
                 longestZeroRun = max(longestZeroRun, stats.longestZeroRun)
                 bad = String(format: "window %ld at %ld s: %ld frames of exact zeros in a second with sound, starting %.3f s in",
@@ -296,6 +363,17 @@ private func soakOnce(_ ctx: Context, _ plan: SoakPlan, buffer: UInt32, duette: 
             detail: plan.real ? "in seconds that had sound" : "anywhere in the recording")
     if plan.real {
         r.info(prefix + "silent-windows", "\(silentWindows) of \(windows)", detail: "seconds of exact silence throughout: nothing came in")
+        r.info(prefix + "mic-zeros", "\(micZeroWindows) of \(windows)",
+               detail: "seconds whose exact zeros the mic delivered itself (a mute switch, a noise gate): not counted as dropouts")
+        let share = windows > 0 ? Double(soundWindows) / Double(windows) : 0
+        let value = "\(soundWindows) of \(windows) seconds had sound"
+        let detail = String(format: "a second has sound when less than %.0f%% of it is exact zeros; at least %.0f%% of them must, or the gaps could not show",
+                            SoakPlan.silentShareLimit * 100, SoakPlan.minimumSoundShare * 100)
+        if share >= SoakPlan.minimumSoundShare {
+            r.check(prefix + "sound", true, value, detail: detail)
+        } else {
+            r.skip(prefix + "sound", value, detail: detail)
+        }
     }
     let perMinute = SoakPlan.perMinute(stamps.map { $0.timeIntervalSince(soakStart) }, minutes: plan.minutes)
     r.info(prefix + "overloads-per-minute", perMinute.map { String($0) }.joined(separator: " "),

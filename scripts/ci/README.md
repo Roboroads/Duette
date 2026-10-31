@@ -25,7 +25,7 @@ The hands-on soak runs on a real Mac with the installed pkg, which ships duettec
 "/Library/Application Support/Duette/duettectl" soak --hands-on
 ```
 
-About 22 minutes: a 30-second control, then 10 minutes each at 128 and 64 frames with the default microphone, each ending with "Measure latency". It ends with `SOAK PASS: ...` or `SOAK FAIL: <check>: <value>` and `Send this file: ~/Desktop/Duette-soak-<time>.txt`. The checks and options are in `tools/duettectl/README.md`.
+About 22 minutes: a 30-second control, then 10 minutes each at 128 and 64 frames with the default microphone, each ending with "Measure latency". Keep sound going near the microphone the whole time (music near the Mac works). It ends with `SOAK PASS: ...`, `SOAK FAIL: <check>: <value>` or `SOAK INCONCLUSIVE: ...` (too little sound to test; exit status 2), then `Send this file: ~/Desktop/Duette-soak-<time>.txt`. The checks and options are in `tools/duettectl/README.md`.
 
 ## Rules for a script
 

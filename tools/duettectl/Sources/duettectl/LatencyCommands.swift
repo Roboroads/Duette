@@ -90,9 +90,10 @@ func measureLatencyChecks(_ r: Reporter, _ run: EngineRun, prefix: String) -> La
                            Format.frames(loopback.meanFrames, sampleRate: rate),
                            Format.frames(Double(measurement.estimate.loopbackFrames), sampleRate: rate),
                            LatencyModel.toleranceMilliseconds))
-    r.info(prefix + "total", String(format: "Duette adds about %.0f ms", measurement.totalMilliseconds),
-           detail: String(format: "%.0f frames: the HAL's %u for the engine's input plus the %.0f measured; the estimate is %u frames (%.2f ms)",
-                          measurement.totalFrames, measurement.estimate.inputFrames, loopback.meanFrames,
+    r.info(prefix + "total", String(format: "Duette adds about %.0f ms; microphone to other apps about %.0f ms",
+                                    measurement.addedMilliseconds, measurement.totalMilliseconds),
+           detail: String(format: "Duette's part is the %.0f frames measured; with the HAL's %u for the mic into the engine, %.0f frames. Estimate %u frames (%.2f ms)",
+                          loopback.meanFrames, measurement.estimate.inputFrames, measurement.totalFrames,
                           measurement.estimate.frames, measurement.estimate.milliseconds))
 
     let cycles = run.engine.stats().cycles
