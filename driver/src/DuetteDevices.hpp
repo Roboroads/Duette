@@ -32,6 +32,17 @@ inline constexpr UInt32 kChannels = 2;
 inline constexpr UInt32 kZeroTimeStampPeriod = 16384;
 inline constexpr std::size_t kLoopbackFrames = 16384;
 /// How far behind "now" the input reads. Covers a sink write cycle that runs a little late.
+///
+/// What the devices report is what they do: a frame written to the sink at sample time t is read
+/// from "Duette" at sample time t (latency 0 on both), and the HAL's figures for the path, both
+/// buffers plus this offset, are what the CI runner measured from the writer's IOProc call to the
+/// reader's: 275 frames for 272 reported at 128, 144 for 144 at 64 (integration's loopback and
+/// latency checks hold them to that). On the runner the soak's failures all came with late
+/// cycles that dropped whole writer buffers (144 to 836 frames of silence) at about the rate a
+/// do-nothing IOProc on the runner's own devices has. No safety offset below a buffer covers
+/// that, and a 16-frame offset on the sink as well made no difference there, so the sink stays
+/// at 0 and this at 16 (a third of a millisecond) until a real Mac shows otherwise:
+/// `duettectl soak --hands-on`.
 inline constexpr UInt32 kInputSafetyOffset = 16;
 /// Fade of the self-test tone: as long as SmoothedGain's ramps (5 ms, 240 frames).
 inline constexpr UInt32 kToneRampFrames = static_cast<UInt32>(
