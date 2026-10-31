@@ -495,10 +495,25 @@ final class AppModel: ObservableObject {
     func diagnosticsPermissions() -> [String: String] {
         [
             "microphone": micPermission.rawValue,
-            "systemAudioRecording": status.appSilentWhilePlaying
-                ? "probably denied: the app is playing but only silence arrives"
-                : "unknown: macOS has no check for it; allowed if sound arrives",
+            "systemAudioRecording": Self.describeSystemAudioRecording(
+                services.audioSystem.systemAudioCaptureAuthorization(),
+                raw: services.audioSystem.systemAudioCaptureRawAnswer(),
+                silentWhilePlaying: status.appSilentWhilePlaying),
         ]
+    }
+
+    /// What macOS answered about System Audio Recording, as it came, for the diagnostics. There is
+    /// no public check, so the answer may be missing, and then sound arriving is the only proof.
+    static func describeSystemAudioRecording(_ authorization: CaptureAuthorization, raw: Int32?,
+                                             silentWhilePlaying: Bool) -> String {
+        let name: String
+        switch authorization {
+        case .authorized: name = "authorized"
+        case .denied: name = "denied"
+        case .unknown: name = "unknown"
+        }
+        let answer = raw.map { "macOS answered \($0)" } ?? "macOS gave no answer"
+        return "\(name) (\(answer))" + (silentWhilePlaying ? "; the app is playing but only silence arrives" : "")
     }
 
     func exportDiagnostics() {
