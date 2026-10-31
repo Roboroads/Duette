@@ -586,6 +586,22 @@ final class AppModelTests: XCTestCase {
         XCTAssertNotNil(permissions["systemAudioRecording"])
     }
 
+    func testTheDiagnosticsGiveTheRawAnswerOfMacOSForSystemAudioRecording() {
+        let model = world.makeModel()
+        model.start()
+        let cases: [(CaptureAuthorization, Int32?, String)] = [
+            (.authorized, 0, "authorized (macOS answered 0)"),
+            (.denied, 1, "denied (macOS answered 1)"),
+            (.unknown, 2, "unknown (macOS answered 2)"),
+            (.unknown, nil, "unknown (macOS gave no answer)"),
+        ]
+        for (authorization, raw, expected) in cases {
+            world.audio.captureAuthorization = authorization
+            world.audio.captureRawAnswer = raw
+            XCTAssertEqual(model.diagnosticsPermissions()["systemAudioRecording"], expected)
+        }
+    }
+
     // MARK: Measure latency
 
     private let measured = LoopbackMeasurement(bufferFrameSize: 128, meanFrames: 275, worstFrames: 400, sampleOffset: 0,

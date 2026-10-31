@@ -72,6 +72,9 @@ final class FakeAudioSystem: AudioSystem {
     var parents: [pid_t: pid_t] = [:]
     var inputClients: [pid_t]? = []
     var rates: [AudioObjectID: Double] = [:]
+    /// What macOS says about System Audio Recording, and the number it answered with.
+    var captureAuthorization: CaptureAuthorization = .unknown
+    var captureRawAnswer: Int32?
     /// What a test sound through the loopback gives.
     var loopback: Result<LoopbackMeasurement, Error> = .failure(LatencyMeasurementError.unsupported)
 
@@ -177,6 +180,10 @@ final class FakeAudioSystem: AudioSystem {
     func parentPID(of pid: pid_t) -> pid_t? { parents[pid] }
 
     func inputClientPIDs() -> [pid_t]? { inputClients }
+
+    func systemAudioCaptureAuthorization() -> CaptureAuthorization { captureAuthorization }
+
+    func systemAudioCaptureRawAnswer() -> Int32? { captureRawAnswer }
 
     func createTap(_ spec: TapSpec) throws -> ProcessTap {
         createdTaps.append(spec)
