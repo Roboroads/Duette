@@ -1,14 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 
-# Apple Silicon, macOS 14.2+. Set before project() so libASPL is built the same way.
-if(APPLE)
-  if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.2" CACHE STRING "Minimum macOS version")
-  endif()
-  if(NOT CMAKE_OSX_ARCHITECTURES)
-    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Architectures to build")
-  endif()
-endif()
+# Apple Silicon, macOS 14.2+. Set before project() so libASPL is built the same way (APPLE is
+# not known yet here; other platforms ignore both).
+set(CMAKE_OSX_DEPLOYMENT_TARGET "14.2" CACHE STRING "Minimum macOS version")
+set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Architectures to build")
 
 project(duette_driver LANGUAGES C CXX)
 
@@ -91,6 +86,11 @@ endif()
 
 # --------------------------------------------------------------------------------------- plug-in
 
+if(CMAKE_GENERATOR MATCHES "Ninja")
+  # libASPL declares an empty BYPRODUCTS per generated file; Ninja rejects that.
+  message(FATAL_ERROR "Configure the plug-in with -G \"Unix Makefiles\": libASPL's CMake does not work with Ninja.")
+endif()
+
 include(FetchContent)
 # libASPL (MIT), pinned to a release tag. Its CMake reads the tag with `git describe`, so it must
 # come from git, not from a source archive.
@@ -98,6 +98,8 @@ FetchContent_Declare(libASPL
   GIT_REPOSITORY https://github.com/gavv/libASPL.git
   GIT_TAG        v3.1.2
   GIT_SHALLOW    TRUE
+  # Its headers are included as system headers, so our warning flags don't apply to them.
+  SYSTEM
   EXCLUDE_FROM_ALL)
 set(BUILD_TESTING OFF)
 FetchContent_MakeAvailable(libASPL)
@@ -125,9 +127,6 @@ target_compile_definitions(DuetteDriver PRIVATE
   DUETTE_TEST_DEVICES=$<BOOL:${DUETTE_TEST_DEVICES}>
   # Temporary: a raw-typed custom property the CI probe tries to read.
   DUETTE_RAW_PROPERTY_EXPERIMENT=1)
-# libASPL's headers trip some of our warnings; treat them as system headers.
-get_target_property(_aspl_includes libASPL INTERFACE_INCLUDE_DIRECTORIES)
-target_include_directories(DuetteDriver SYSTEM PRIVATE ${_aspl_includes})
 set_target_properties(DuetteDriver PROPERTIES
   OUTPUT_NAME "Duette"
   PREFIX ""

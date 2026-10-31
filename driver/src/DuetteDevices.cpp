@@ -220,7 +220,8 @@ void DuetteInputDevice::setSelfTestToneValue(CFPropertyListRef value) {
   } else if (type == CFBooleanGetTypeID()) {
     setSelfTestTone(CFBooleanGetValue(static_cast<CFBooleanRef>(value)));
   } else {
-    os_log_error(driverLog(), "Duette: ignoring a self-test tone value that is not a number");
+    os_log_error(driverLog(), "Duette: ignoring a self-test tone value of CF type %lu",
+                 static_cast<unsigned long>(type));
   }
 }
 

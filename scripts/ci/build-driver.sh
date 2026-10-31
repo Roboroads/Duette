@@ -8,7 +8,6 @@
 #
 # Environment:
 #   GITHUB_RUN_NUMBER   CFBundleVersion (default 0)
-#   CMAKE_GENERATOR     generator to use (default: Ninja if installed, else CMake's choice)
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -22,9 +21,9 @@ fi
 version=$(tr -d '[:space:]' < version.txt)
 build_number=${GITHUB_RUN_NUMBER:-0}
 jobs=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
-if [ -z "${CMAKE_GENERATOR:-}" ] && command -v ninja >/dev/null 2>&1; then
-  export CMAKE_GENERATOR=Ninja
-fi
+# libASPL's CMake declares an empty BYPRODUCTS for each generated file, which Ninja rejects
+# ("defined as an output multiple times"). Makefiles accept it, and it is what libASPL uses.
+export CMAKE_GENERATOR="Unix Makefiles"
 
 release_dir=$repo_root/build/driver-release
 testdev_dir=$repo_root/build/driver-testdevices
@@ -35,7 +34,8 @@ mkdir -p "$out_dir" "$test_out_dir"
 configure() { # build dir, extra args...
   local dir=$1
   shift
-  cmake -S "$repo_root/driver" -B "$dir" \
+  # -Wno-dev: libASPL's CMake trips policy warnings (CMP0175) that are not ours to fix.
+  cmake -S "$repo_root/driver" -B "$dir" -Wno-dev \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=14.2 \
