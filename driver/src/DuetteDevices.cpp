@@ -287,7 +287,17 @@ OSStatus DuetteInputDevice::StartIOImpl(UInt32 clientID, UInt32 startCount) {
 
 OSStatus DuetteInputDevice::StopIOImpl(UInt32 clientID, UInt32 startCount) {
   const OSStatus status = ClockedDevice::StopIOImpl(clientID, startCount);
-  const bool changed = updateIoClient(clientID, -1, false);
+  bool changed = updateIoClient(clientID, -1, false);
+  if (startCount == 0) {
+    // The HAL starts and stops the device's IO once for all its readers, and the last stop can
+    // name a different client than the first start (seen on macOS 15). Nobody reads now.
+    const std::vector<pid_t> before = inputClientPids();
+    {
+      std::lock_guard<std::mutex> lock(clientsMutex_);
+      ioClients_.clear();
+    }
+    changed = changed || !before.empty();
+  }
   os_log_info(driverLog(), "Duette: StopIO client %u, %u still doing input IO",
               static_cast<unsigned>(clientID), static_cast<unsigned>(startCount));
   if (startCount == 0) {
