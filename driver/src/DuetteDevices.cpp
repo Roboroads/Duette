@@ -23,12 +23,6 @@ constexpr float kSelfTestToneHz = static_cast<float>(DUETTE_SELF_TEST_TONE_HZ);
 const float kSelfTestToneAmplitude =
     static_cast<float>(std::pow(10.0, static_cast<double>(DUETTE_SELF_TEST_TONE_DBFS) / 20.0));
 
-#if DUETTE_RAW_PROPERTY_EXPERIMENT
-// Temporary: a raw (non-CF) property, to see in CI whether coreaudiod passes one to clients.
-constexpr AudioObjectPropertySelector kRawExperimentSelector = 0x64787277u;  // 'dxrw'
-constexpr UInt32 kRawExperimentValue = 0x00C0FFEEu;
-#endif
-
 aspl::DeviceParameters duetteParameters() {
   aspl::DeviceParameters p;
   p.Name = DUETTE_DEVICE_NAME;
@@ -201,6 +195,8 @@ void DuetteInputDevice::setSelfTestTone(bool on) {
   const bool was = selfTestTone_.exchange(on, std::memory_order_relaxed);
   if (was != on) {
     os_log_info(driverLog(), "Duette: self-test tone %{public}s", on ? "on" : "off");
+    // So a UI shows the change when another client (duettectl) flips it.
+    NotifyPropertyChanged(DUETTE_PROPERTY_SELF_TEST_TONE);
   }
 }
 
@@ -330,57 +326,6 @@ void DuetteInputDevice::doIO(UInt32 operationID, UInt32 frames,
   framesRead_.fetch_add(frames, std::memory_order_relaxed);
   framesWithoutData_.fetch_add(frames - valid, std::memory_order_relaxed);
 }
-
-#if DUETTE_RAW_PROPERTY_EXPERIMENT
-Boolean DuetteInputDevice::HasProperty(AudioObjectID objectID, pid_t clientPID,
-                                       const AudioObjectPropertyAddress* address) const {
-  if (objectID == GetID() && address != nullptr && address->mSelector == kRawExperimentSelector) {
-    return true;
-  }
-  return ClockedDevice::HasProperty(objectID, clientPID, address);
-}
-
-OSStatus DuetteInputDevice::IsPropertySettable(AudioObjectID objectID, pid_t clientPID,
-                                               const AudioObjectPropertyAddress* address,
-                                               Boolean* outIsSettable) const {
-  if (objectID == GetID() && address != nullptr && address->mSelector == kRawExperimentSelector) {
-    if (outIsSettable == nullptr) return kAudioHardwareIllegalOperationError;
-    *outIsSettable = 0;
-    return kAudioHardwareNoError;
-  }
-  return ClockedDevice::IsPropertySettable(objectID, clientPID, address, outIsSettable);
-}
-
-OSStatus DuetteInputDevice::GetPropertyDataSize(AudioObjectID objectID, pid_t clientPID,
-                                                const AudioObjectPropertyAddress* address,
-                                                UInt32 qualifierDataSize,
-                                                const void* qualifierData,
-                                                UInt32* outDataSize) const {
-  if (objectID == GetID() && address != nullptr && address->mSelector == kRawExperimentSelector) {
-    if (outDataSize == nullptr) return kAudioHardwareIllegalOperationError;
-    *outDataSize = sizeof(UInt32);
-    return kAudioHardwareNoError;
-  }
-  return ClockedDevice::GetPropertyDataSize(objectID, clientPID, address, qualifierDataSize,
-                                            qualifierData, outDataSize);
-}
-
-OSStatus DuetteInputDevice::GetPropertyData(AudioObjectID objectID, pid_t clientPID,
-                                            const AudioObjectPropertyAddress* address,
-                                            UInt32 qualifierDataSize, const void* qualifierData,
-                                            UInt32 inDataSize, UInt32* outDataSize,
-                                            void* outData) const {
-  if (objectID == GetID() && address != nullptr && address->mSelector == kRawExperimentSelector) {
-    if (outDataSize == nullptr || outData == nullptr) return kAudioHardwareIllegalOperationError;
-    if (inDataSize < sizeof(UInt32)) return kAudioHardwareBadPropertySizeError;
-    *static_cast<UInt32*>(outData) = kRawExperimentValue;
-    *outDataSize = sizeof(UInt32);
-    return kAudioHardwareNoError;
-  }
-  return ClockedDevice::GetPropertyData(objectID, clientPID, address, qualifierDataSize,
-                                        qualifierData, inDataSize, outDataSize, outData);
-}
-#endif
 
 // ---------------------------------------------------------------------------- DuetteSinkDevice
 

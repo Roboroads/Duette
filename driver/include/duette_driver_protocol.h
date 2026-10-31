@@ -47,7 +47,8 @@
  * Scope kAudioObjectPropertyScopeGlobal, element kAudioObjectPropertyElementMain. Both are listed
  * in kAudioObjectPropertyCustomPropertyInfoList as kAudioServerPlugInCustomPropertyDataTypeCFPropertyList:
  * coreaudiod marshals a plug-in's custom properties only as CFString or CFPropertyList, so the
- * values travel as CF objects, not as raw integers.
+ * values travel as CF objects, not as raw integers. (Checked in CI: a raw UInt32 property left
+ * out of that list reads as kAudioHardwareUnknownPropertyError from a client.)
  *
  * Reading one: pass a CFPropertyListRef (size sizeof(CFPropertyListRef)) to
  * AudioObjectGetPropertyData. You own the returned object and must CFRelease it.
@@ -56,7 +57,8 @@
 
 /* Self-test tone. Value: CFNumber, 0 = off (the default), 1 = on. Settable, not persisted.
  * While on, "Duette" plays a 440 Hz sine at -12 dBFS on both channels instead of the sink's
- * audio. A CFBoolean is accepted when setting. */
+ * audio. A CFBoolean is accepted when setting. The plug-in sends a property-changed
+ * notification when the value changes. */
 #define DUETTE_PROPERTY_SELF_TEST_TONE 0x64747374u /* 'dtst' */
 #define DUETTE_SELF_TEST_TONE_HZ       440
 #define DUETTE_SELF_TEST_TONE_DBFS     (-12)

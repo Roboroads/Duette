@@ -128,21 +128,6 @@ class DuetteInputDevice final : public ClockedDevice {
   OSStatus RemoveClient(AudioObjectID objectID,
                         const AudioServerPlugInClientInfo* rawClientInfo) override;
 
-#if DUETTE_RAW_PROPERTY_EXPERIMENT
-  Boolean HasProperty(AudioObjectID objectID, pid_t clientPID,
-                      const AudioObjectPropertyAddress* address) const override;
-  OSStatus IsPropertySettable(AudioObjectID objectID, pid_t clientPID,
-                              const AudioObjectPropertyAddress* address,
-                              Boolean* outIsSettable) const override;
-  OSStatus GetPropertyDataSize(AudioObjectID objectID, pid_t clientPID,
-                               const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize,
-                               const void* qualifierData, UInt32* outDataSize) const override;
-  OSStatus GetPropertyData(AudioObjectID objectID, pid_t clientPID,
-                           const AudioObjectPropertyAddress* address, UInt32 qualifierDataSize,
-                           const void* qualifierData, UInt32 inDataSize, UInt32* outDataSize,
-                           void* outData) const override;
-#endif
-
  protected:
   OSStatus StartIOImpl(UInt32 clientID, UInt32 startCount) override;
   OSStatus StopIOImpl(UInt32 clientID, UInt32 startCount) override;

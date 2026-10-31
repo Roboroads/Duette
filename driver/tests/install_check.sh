@@ -29,7 +29,11 @@ fail() {
   failed=1
 }
 
+# Run while the plug-in is still installed: log show needs its binary to format the messages.
+log_dumped=no
 dump_log() {
+  [ "$log_dumped" = no ] || return 0
+  log_dumped=yes
   echo "::group::driver log (last 10 minutes)"
   /usr/bin/log show --last 10m --info --debug \
     --predicate 'subsystem == "me.roboroads.duette.driver" AND category == "driver"' 2>/dev/null |
@@ -105,6 +109,8 @@ done
 echo "::group::duette-driver-probe test-devices"
 "$probe" test-devices || fail "duette-driver-probe test-devices failed"
 echo "::endgroup::"
+
+dump_log
 
 echo "::group::uninstall"
 sudo bash scripts/uninstall.sh

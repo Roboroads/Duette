@@ -366,11 +366,13 @@ bool waitUntil(int ms, const std::function<bool()>& condition) {
 }
 
 std::atomic<int> gClientNotifications{0};
+std::atomic<int> gToneNotifications{0};
 
-OSStatus clientsChanged(AudioObjectID, UInt32 count, const AudioObjectPropertyAddress* addresses,
-                        void*) {
+OSStatus propertiesChanged(AudioObjectID, UInt32 count, const AudioObjectPropertyAddress* addresses,
+                           void*) {
   for (UInt32 i = 0; i < count; ++i) {
     if (addresses[i].mSelector == DUETTE_PROPERTY_INPUT_CLIENTS) ++gClientNotifications;
+    if (addresses[i].mSelector == DUETTE_PROPERTY_SELF_TEST_TONE) ++gToneNotifications;
   }
   return noErr;
 }
@@ -450,17 +452,6 @@ void checkCustomPropertyInfo(AudioObjectID duette) {
        found.c_str());
 }
 
-void checkRawExperiment(AudioObjectID duette) {
-  const AudioObjectPropertyAddress a = address(0x64787277u);  // 'dxrw'
-  const Boolean has = AudioObjectHasProperty(duette, &a);
-  UInt32 value = 0;
-  UInt32 size = sizeof value;
-  const OSStatus s = AudioObjectGetPropertyData(duette, &a, 0, nullptr, &size, &value);
-  info("raw custom property experiment ('dxrw', UInt32, not in the info list): has=%d status=%s "
-       "size=%u value=0x%08x (0x00c0ffee means raw values reach clients)",
-       has, fourcc(s).c_str(), size, value);
-}
-
 int commandCheck() {
   const AudioObjectID duette = waitForDevice(DUETTE_DEVICE_UID, 30);
   report(duette != kAudioObjectUnknown, "duette.present", "id=%u", duette);
@@ -470,9 +461,10 @@ int commandCheck() {
 
   checkDeviceBasics(duette, sink);
   checkCustomPropertyInfo(duette);
-  checkRawExperiment(duette);
 
   // 'dtst'
+  const AudioObjectPropertyAddress toneAddress = address(DUETTE_PROPERTY_SELF_TEST_TONE);
+  AudioObjectAddPropertyListener(duette, &toneAddress, propertiesChanged, nullptr);
   const int initial = selfTestTone(duette);
   report(initial == 0, "dtst.default-off", "value=%d", initial);
   const OSStatus setOn = setSelfTestTone(duette, true);
@@ -481,7 +473,7 @@ int commandCheck() {
 
   // 'dcli' and the tone, while this process reads "Duette".
   const AudioObjectPropertyAddress clientsAddress = address(DUETTE_PROPERTY_INPUT_CLIENTS);
-  AudioObjectAddPropertyListener(duette, &clientsAddress, clientsChanged, nullptr);
+  AudioObjectAddPropertyListener(duette, &clientsAddress, propertiesChanged, nullptr);
   std::vector<pid_t> pids;
   OSStatus s = noErr;
   const bool readable = inputClients(duette, pids, s);
@@ -518,11 +510,15 @@ int commandCheck() {
   sleepMs(300);
   report(gClientNotifications.load() >= 2, "dcli.notifies", "%d property-changed notifications",
          gClientNotifications.load());
-  AudioObjectRemovePropertyListener(duette, &clientsAddress, clientsChanged, nullptr);
+  AudioObjectRemovePropertyListener(duette, &clientsAddress, propertiesChanged, nullptr);
 
   const OSStatus setOff = setSelfTestTone(duette, false);
   report(setOff == noErr && selfTestTone(duette) == 0, "dtst.set-off", "status=%s value=%d",
          fourcc(setOff).c_str(), selfTestTone(duette));
+  const bool toneNotified = waitUntil(1000, [] { return gToneNotifications.load() >= 2; });
+  report(toneNotified, "dtst.notifies", "%d property-changed notifications for on and off",
+         gToneNotifications.load());
+  AudioObjectRemovePropertyListener(duette, &toneAddress, propertiesChanged, nullptr);
 
   // Loopback: play 1 kHz into the hidden sink, read it back from "Duette".
   {

@@ -124,9 +124,7 @@ target_include_directories(DuetteDriver PRIVATE src include)
 target_link_libraries(DuetteDriver PRIVATE libASPL duette::core duette_driver_warnings)
 target_compile_definitions(DuetteDriver PRIVATE
   DUETTE_DRIVER_VERSION="${DUETTE_VERSION}"
-  DUETTE_TEST_DEVICES=$<BOOL:${DUETTE_TEST_DEVICES}>
-  # Temporary: a raw-typed custom property the CI probe tries to read.
-  DUETTE_RAW_PROPERTY_EXPERIMENT=1)
+  DUETTE_TEST_DEVICES=$<BOOL:${DUETTE_TEST_DEVICES}>)
 set_target_properties(DuetteDriver PROPERTIES
   OUTPUT_NAME "Duette"
   PREFIX ""
