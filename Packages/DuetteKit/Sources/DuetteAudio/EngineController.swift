@@ -123,6 +123,9 @@ public final class EngineController {
     public static let retryDelays: [TimeInterval] = [1, 2, 5]
     public static let monitorInterval: TimeInterval = 0.5
     public static let silenceHintSeconds: Double = 3
+    /// How often macOS is asked whether System Audio Recording is still allowed, while the app is
+    /// playing and the tap that carried sound earlier has gone silent.
+    public static let permissionCheckSeconds: Double = 2
 
     /// The engine. Gains, mutes, meters and the test tone are set and read on it directly.
     public let engine: MixEngine

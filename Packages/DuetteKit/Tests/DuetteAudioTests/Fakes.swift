@@ -70,6 +70,9 @@ final class FakeAudioSystem: AudioSystem {
     var bufferChannelOverride: [Int]?
     var inputClients: [pid_t]? = []
     var rates: [AudioObjectID: Double] = [:]
+    /// What macOS says about System Audio Recording.
+    var captureAuthorization: CaptureAuthorization = .unknown
+    private(set) var captureAuthorizationChecks = 0
 
     // Failures to hand out, first one first.
     var tapErrors: [OSStatus] = []
@@ -203,6 +206,11 @@ final class FakeAudioSystem: AudioSystem {
     }
 
     func inputClientPIDs() -> [pid_t]? { inputClients }
+
+    func systemAudioCaptureAuthorization() -> CaptureAuthorization {
+        captureAuthorizationChecks += 1
+        return captureAuthorization
+    }
 
     func createTap(_ spec: TapSpec) throws -> ProcessTap {
         if !tapErrors.isEmpty { throw CoreAudioError(tapErrors.removeFirst(), "create the process tap") }
