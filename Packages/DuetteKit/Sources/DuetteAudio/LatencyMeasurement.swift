@@ -43,13 +43,20 @@ public enum LatencyModel {
     /// driver is missing). The reader's buffer is taken to be the engine's: "Duette"'s own
     /// buffer-size property is this process's setting and says nothing about other apps. The
     /// drift-compensation resampler is in no HAL property and is left out.
+    ///
+    /// `mic` is the mic device's own timing: its stream latency is added to the input side (the
+    /// aggregate's device latency and safety offset already cover the mic's). Stream latencies of
+    /// the aggregate's output and of "Duette" count on the loopback.
     public static func estimate(aggregate: DeviceTiming, duette: DeviceTiming?, mic: DeviceTiming? = nil,
                                 sampleRate: Double) -> LatencyEstimate {
         let buffer = aggregate.bufferFrameSize ?? 0
-        let input = buffer + (aggregate.inputLatency ?? 0) + (aggregate.inputSafetyOffset ?? 0)
+        var input = buffer + (aggregate.inputLatency ?? 0) + (aggregate.inputSafetyOffset ?? 0)
+        input += mic?.inputStreamLatency ?? 0
         var loopback = buffer + (aggregate.outputLatency ?? 0) + (aggregate.outputSafetyOffset ?? 0)
+        loopback += aggregate.outputStreamLatency ?? 0
         if let duette {
             loopback += buffer + (duette.inputLatency ?? 0) + (duette.inputSafetyOffset ?? 0)
+            loopback += duette.inputStreamLatency ?? 0
         }
         return LatencyEstimate(inputFrames: input, loopbackFrames: loopback, sampleRate: sampleRate)
     }
@@ -117,8 +124,8 @@ public struct LatencyMeasurement: Codable, Equatable {
         let rate = LatencyModel.rate(sampleRate)
         totalFrames = Double(estimate.inputFrames) + loopback.meanFrames
         totalMilliseconds = totalFrames * 1000 / rate
-        addedFrames = 0
-        addedMilliseconds = 0
+        addedFrames = loopback.meanFrames
+        addedMilliseconds = loopback.meanFrames * 1000 / rate
         differenceMilliseconds = (loopback.meanFrames - Double(estimate.loopbackFrames)) * 1000 / rate
         // In frames, so exactly one millisecond's worth still matches.
         let toleranceFrames = LatencyModel.toleranceMilliseconds * rate / 1000

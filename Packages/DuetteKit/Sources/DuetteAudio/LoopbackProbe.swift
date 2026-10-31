@@ -187,9 +187,18 @@ public enum LoopbackProbe {
     /// attempt number. A take that throws counts as a failed attempt; if every one threw, the last
     /// error is thrown. Otherwise, with no good take, LatencyMeasurementError.notHeard.
     public static func pickTake(attempts: Int, take: () throws -> LoopbackResult?) throws -> (result: LoopbackResult, attempt: Int) {
+        var lastError: Error?
+        var completed = false
         for attempt in 1...max(1, attempts) {
-            if let result = try take() { return (result, attempt) }
+            do {
+                let result = try take()
+                completed = true
+                if let result, isGood(result) { return (result, attempt) }
+            } catch {
+                lastError = error
+            }
         }
+        if !completed, let lastError { throw lastError }
         throw LatencyMeasurementError.notHeard
     }
 
@@ -201,21 +210,16 @@ public enum LoopbackProbe {
         try AudioObject(duette).set(kAudioDevicePropertyBufferFrameSize, to: bufferFrameSize)
         let chirp = Chirp.make(sampleRate: sampleRate, startHz: 200, endHz: 12000,
                                frames: Int(chirpSeconds * sampleRate), amplitude: chirpAmplitude)
-        var best: LoopbackResult?
-        for attempt in 1...maxTakes {
-            let result = try takeOnce(chirp: chirp, sink: sink, duette: duette, bufferFrameSize: bufferFrameSize,
-                                      sampleRate: sampleRate)
-            if let result, isGood(result),
-               let measurement = LoopbackMeasurement(result: result, bufferFrameSize: bufferFrameSize, takes: attempt) {
-                return measurement
-            }
-            if let result, result.confidence > (best?.confidence ?? -1) { best = result }
+        // Only a clean take is a result: a take whose chirp came back late, shifted or mangled
+        // (the driver's test tone in its place, a late cycle) would give a wrong figure.
+        let chosen = try pickTake(attempts: maxTakes) {
+            try takeOnce(chirp: chirp, sink: sink, duette: duette, bufferFrameSize: bufferFrameSize, sampleRate: sampleRate)
         }
-        // No clean take: the best one, if its chirp was found at all; the caller sees its quality.
-        if let best, let measurement = LoopbackMeasurement(result: best, bufferFrameSize: bufferFrameSize, takes: maxTakes) {
-            return measurement
+        guard let measurement = LoopbackMeasurement(result: chosen.result, bufferFrameSize: bufferFrameSize,
+                                                    takes: chosen.attempt) else {
+            throw LatencyMeasurementError.notHeard
         }
-        throw LatencyMeasurementError.notHeard
+        return measurement
     }
 
     private static func takeOnce(chirp: [Float], sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,

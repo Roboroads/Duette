@@ -213,8 +213,10 @@ public final class DiagnosticsCollector {
         if let controller, let status {
             let engine = controller.engine
             let aggregateTiming = status.aggregateID.map(timing)
+            let micTiming = status.micUID.flatMap { audioSystem.deviceID(forUID: $0) }.map(timing)
             let estimate = aggregateTiming.map {
-                LatencyModel.estimate(aggregate: $0, duette: driver.deviceTiming, sampleRate: status.sampleRate ?? 48000)
+                LatencyModel.estimate(aggregate: $0, duette: driver.deviceTiming, mic: micTiming,
+                                      sampleRate: status.sampleRate ?? 48000)
             }
             let measured = controller.latestLatencyMeasurement
             var gains: [String: Float] = [:]
@@ -249,7 +251,9 @@ public final class DiagnosticsCollector {
     @available(*, deprecated, message: "collect(permissions:selfTests:now:) takes the latest measurement from the controller")
     public func collect(permissions: [String: String] = [:], selfTests: [String: String] = [:],
                         measuredLatencyMilliseconds: Double?, now: Date = Date()) -> DiagnosticsReport {
-        collect(permissions: permissions, selfTests: selfTests, now: now)
+        var report = collect(permissions: permissions, selfTests: selfTests, now: now)
+        if let measuredLatencyMilliseconds { report.engine?.measuredLatencyMilliseconds = measuredLatencyMilliseconds }
+        return report
     }
 
     /// diagnostics.json: pretty-printed, keys sorted, ISO 8601 dates.
