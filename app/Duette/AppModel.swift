@@ -14,6 +14,15 @@ enum ExportState: Equatable {
     case failed(String)
 }
 
+/// How "Measure latency" is doing.
+enum LatencyCheck: Equatable {
+    case idle
+    case measuring
+    case done(LatencyMeasurement)
+    /// The text says what went wrong, in plain words.
+    case failed(String)
+}
+
 /// The numbers under "For experts".
 struct ExpertSnapshot: Equatable {
     var latencyText: String
@@ -39,6 +48,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var message: String?
     @Published private(set) var driverToneOn = false
     @Published private(set) var engineToneOn = false
+    @Published private(set) var latencyCheck: LatencyCheck = .idle
 
     // What the user chose; saved by Settings.
     @Published private(set) var appBundleID: String?
@@ -371,6 +381,24 @@ final class AppModel: ObservableObject {
         }
         return ExpertSnapshot(latencyText: latency, overloads: controller.engine.stats().overloads)
     }
+
+    // MARK: Measure latency
+
+    func measureLatency() {
+    }
+
+    /// One plain sentence: what Duette adds, or why there is no answer.
+    var latencyResult: String? {
+        nil
+    }
+
+    /// The measured loopback next to what was expected.
+    var latencyDetail: String? {
+        nil
+    }
+
+    /// What the self-tests found, for diagnostics.
+    var selfTestResults: [String: String] { selfTests }
 
     // MARK: Diagnostics
 

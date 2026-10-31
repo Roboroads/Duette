@@ -202,6 +202,7 @@ public final class DiagnosticsCollector {
             let estimate = aggregateTiming.map {
                 LatencyModel.estimate(aggregate: $0, duette: driver.deviceTiming, sampleRate: status.sampleRate ?? 48000)
             }
+            let measured = controller.latestLatencyMeasurement
             var gains: [String: Float] = [:]
             var mutes: [String: Bool] = [:]
             for source in MixSource.allCases {
@@ -211,7 +212,7 @@ public final class DiagnosticsCollector {
             engineReport = DiagnosticsReport.Engine(
                 status: status, stats: engine.stats(), gains: gains, mutes: mutes, testTone: engine.testTone,
                 aggregateTiming: aggregateTiming, estimatedLatency: estimate,
-                measuredLatencyMilliseconds: nil, measuredLatency: nil,
+                measuredLatencyMilliseconds: measured?.totalMilliseconds, measuredLatency: measured,
                 meters: controller.meterHistory.summary(window: 60, now: now))
         }
 

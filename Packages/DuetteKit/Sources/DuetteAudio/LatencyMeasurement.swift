@@ -45,16 +45,12 @@ public enum LatencyModel {
     /// drift-compensation resampler is in no HAL property and is left out.
     public static func estimate(aggregate: DeviceTiming, duette: DeviceTiming?, sampleRate: Double) -> LatencyEstimate {
         let buffer = aggregate.bufferFrameSize ?? 0
-        var frames = buffer * 2
-        frames += (aggregate.inputLatency ?? 0) + (aggregate.inputSafetyOffset ?? 0)
-        frames += (aggregate.outputLatency ?? 0) + (aggregate.outputSafetyOffset ?? 0)
+        let input = buffer + (aggregate.inputLatency ?? 0) + (aggregate.inputSafetyOffset ?? 0)
+        var loopback = buffer + (aggregate.outputLatency ?? 0) + (aggregate.outputSafetyOffset ?? 0)
         if let duette {
-            frames += (duette.bufferFrameSize ?? buffer) + (duette.inputLatency ?? 0) + (duette.inputSafetyOffset ?? 0)
+            loopback += buffer + (duette.inputLatency ?? 0) + (duette.inputSafetyOffset ?? 0)
         }
-        var estimate = LatencyEstimate(inputFrames: 0, loopbackFrames: 0, sampleRate: sampleRate)
-        estimate.frames = frames
-        estimate.milliseconds = Double(frames) * 1000 / rate(sampleRate)
-        return estimate
+        return LatencyEstimate(inputFrames: input, loopbackFrames: loopback, sampleRate: sampleRate)
     }
 }
 
@@ -85,7 +81,11 @@ public struct LoopbackMeasurement: Codable, Equatable {
 
     /// From an analysed take; nil if the chirp was not found or its latency not measured.
     public init?(result: LoopbackResult, bufferFrameSize: UInt32, takes: Int) {
-        return nil
+        guard let offset = result.sampleOffset, let mean = result.latencyMean, let worst = result.latencyMax else {
+            return nil
+        }
+        self.init(bufferFrameSize: bufferFrameSize, meanFrames: mean, worstFrames: worst, sampleOffset: offset,
+                  confidence: result.confidence, takes: takes)
     }
 }
 
@@ -110,10 +110,13 @@ public struct LatencyMeasurement: Codable, Equatable {
         self.sampleRate = sampleRate
         self.loopback = loopback
         self.estimate = estimate
-        totalFrames = 0
-        totalMilliseconds = 0
-        differenceMilliseconds = 0
-        matchesEstimate = false
+        let rate = LatencyModel.rate(sampleRate)
+        totalFrames = Double(estimate.inputFrames) + loopback.meanFrames
+        totalMilliseconds = totalFrames * 1000 / rate
+        differenceMilliseconds = (loopback.meanFrames - Double(estimate.loopbackFrames)) * 1000 / rate
+        // In frames, so exactly one millisecond's worth still matches.
+        let toleranceFrames = LatencyModel.toleranceMilliseconds * rate / 1000
+        matchesEstimate = abs(loopback.meanFrames - Double(estimate.loopbackFrames)) <= toleranceFrames
     }
 }
 

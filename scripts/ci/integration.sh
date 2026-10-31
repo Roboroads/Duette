@@ -223,6 +223,10 @@ phase_blocking() {
   run_cmd blocking selftest 60 "tone.left.440hz off.silence" -- selftest || failed=1
   run_cmd blocking loopback-128 90 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 128 loopback || failed=1
   run_cmd blocking loopback-64 90 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 64 loopback || failed=1
+  # M6: "Measure latency" as the app runs it (EngineController pauses the engine, a chirp goes
+  # through the sink): the loopback must match the app's estimate to within 1 ms.
+  run_cmd blocking latency-128 90 "measured sample-offset matches-estimate total engine-resumes" -- --buffer 128 latency || failed=1
+  run_cmd blocking latency-64 90 "measured sample-offset matches-estimate total engine-resumes" -- --buffer 64 latency || failed=1
   run_cmd blocking hidden-agg 60 "main-subdevice clock-device ioproc-runs engine-tone.440hz" -- hidden-agg || failed=1
   # M2 and M4 on the mic path.
   run_cmd blocking engine 60 "duette.1000hz overloads" -- engine --mic test-mic --seconds 3 --expect '1000@-12' || failed=1
@@ -256,6 +260,13 @@ phase_blocking() {
   fi
   [ "$rc" -eq 0 ] || failed=1
 
+  # The tester's soak (soak --hands-on), briefly, with the test mic standing in for a real one:
+  # the code path a real Mac runs. The runner misses deadlines (see phase_soak), so only what does
+  # not depend on that is judged here: the run ends, the result file starts with its SOAK line,
+  # sound came through and the latency was measured at both buffer sizes. Dropouts and overloads
+  # are left to the hands-on run.
+  phase_hands_on_smoke || failed=1
+
   # TCC denial: what an app sees when System Audio Recording is off. Last, and put back after.
   echo "::group::TCC: deny System Audio Recording"
   tcc_set 0 kTCCServiceAudioCapture
@@ -269,6 +280,31 @@ phase_blocking() {
   "$cli" list >/dev/null 2>&1 || true
   echo "::endgroup::"
   return "$failed"
+}
+
+phase_hands_on_smoke() {
+  local file=$out/hands-on-soak.txt rc=0 ok=1 verdict name st
+  rm -f "$file"
+  run_cmd blocking hands-on-soak 240 "plumbing control.default-output 128.signal 64.signal 128.windows 64.windows 128.drift 128.latency.matches-estimate 64.latency.matches-estimate" \
+    -- soak --hands-on --minutes 0.25 --mic me.roboroads.duette.test-mic --out "$file" || rc=$?
+  verdict=$(head -n 1 "$file" 2>/dev/null || true)
+  [ "$rc" -le 1 ] || ok=0
+  case "$verdict" in "SOAK PASS"* | "SOAK FAIL"*) ;; *) ok=0 ;; esac
+  for name in 128.signal 64.signal 128.latency.measured 64.latency.measured; do
+    st=$(awk -F'\t' -v n="$name" '$1 == "hands-on-soak" && $2 == n { print $3 }' "$results" | tail -n 1)
+    [ "$st" = PASS ] || ok=0
+  done
+  if [ "$ok" = 1 ]; then
+    add_check hands-on-soak plumbing PASS "${verdict}" "the file has its SOAK line; sound and the latency at 128 and 64 frames"
+  else
+    add_check hands-on-soak plumbing FAIL "${verdict:-no result file}" "exit $rc; see hands-on-soak.log"
+  fi
+  if [ "$rc" -ne 0 ] && [ "$ok" = 1 ]; then
+    # Its dropout and overload checks failed, as they do on this VM: the summary says so.
+    awk -F'\t' -v OFS='\t' '$2 == "hands-on-soak" { $1 = "hands-on" } { print }' "$commands" >"$commands.tmp"
+    mv "$commands.tmp" "$commands"
+  fi
+  [ "$ok" = 1 ]
 }
 
 # UID of the machine's own output device with this name, from duettectl list.

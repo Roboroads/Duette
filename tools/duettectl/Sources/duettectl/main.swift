@@ -64,9 +64,17 @@ let commands: [(CommandSpec, CommandBody)] = [
     (CommandSpec("feedback-loop", summary: "a tapped process that also reads \"Duette\" sets off the feedback-loop detector",
                  options: [.flag("controller", help: "also check EngineController's status (needs a working tap)")]),
      runFeedbackLoop),
-    (CommandSpec("soak", summary: "engine with the test mic for a while: no overloads, no dropouts",
-                 options: [OptionSpec("minutes", .double, valueName: "MINUTES", default: "10"),
-                           .flag("with-app", help: "also tap a process playing 440 Hz")]),
+    (CommandSpec("latency", summary: "\"Measure latency\" as the app runs it: engine paused, chirp through the sink, measured vs the app's estimate",
+                 options: [OptionSpec("mic", valueName: "MIC", help: micHelp, default: "test-mic")]),
+     runLatency),
+    (CommandSpec("soak", summary: "the engine for a while: dropouts, late cycles per minute, drift, latency (--hands-on: a tester's Mac)",
+                 options: [OptionSpec("minutes", .double, valueName: "MINUTES", help: "per buffer size", default: "10"),
+                           OptionSpec("buffers", valueName: "LIST", help: "buffer sizes one after the other, e.g. 128,64 (default: --buffer)"),
+                           OptionSpec("mic", valueName: "MIC", help: micHelp + "; anything but test-mic soaks the real mic (default: test-mic, with --hands-on default)"),
+                           OptionSpec("app", valueName: "BUNDLE_ID", help: "also tap this app, e.g. com.hnc.Discord (real soak)"),
+                           OptionSpec("out", valueName: "FILE", help: "write the result and every check to this file"),
+                           .flag("with-app", help: "CI: also tap a process playing 440 Hz into the test speaker"),
+                           .flag("hands-on", help: "for a tester's Mac with the installed driver: the default mic, 128 then 64 frames, a 30 s control, the result in a file on the Desktop")]),
      runSoak),
     (CommandSpec("overloads", summary: "count late I/O cycles on any device, with an IOProc that only copies samples",
                  options: [OptionSpec("device", valueName: "UID", default: DuetteDriver.sinkUID),
@@ -126,13 +134,16 @@ do {
 }
 
 let reporter = Reporter(command: invocation.string("label") ?? invocation.command, reportPath: invocation.string("report"))
+let buffer = UInt32(clamping: max(16, invocation.int("buffer") ?? 128))
 var timeout = invocation.double("timeout") ?? 120
-if invocation.command == "soak" { timeout = max(timeout, (invocation.double("minutes") ?? 10) * 60 + 180) }
+if invocation.command == "soak",
+   let plan = try? SoakPlan(invocation, defaultBuffer: buffer, desktop: NSHomeDirectory(), now: Date()) {
+    timeout = max(timeout, plan.watchdogSeconds)
+}
 if invocation.command == "reader" { timeout = 0 }
 Watchdog.arm(seconds: timeout, reporter: reporter)
 HAL.deliverNotificationsOnHALThread()
 
-let buffer = UInt32(clamping: max(16, invocation.int("buffer") ?? 128))
 let context = Context(invocation: invocation, reporter: reporter, buffer: buffer)
 note("duettectl \(invocation.command), pid \(getpid()), buffer \(buffer) frames")
 do {

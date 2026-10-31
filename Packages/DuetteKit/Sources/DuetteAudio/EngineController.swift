@@ -265,8 +265,48 @@ public final class EngineController {
     public func measureLatency(timing: @escaping (AudioObjectID) -> DeviceTiming = DeviceTiming.read,
                                now: @escaping () -> Date = { Date() },
                                completion: @escaping (Result<LatencyMeasurement, LatencyMeasurementError>) -> Void) {
-        scheduler.async {
-            completion(.failure(.unsupported))
+        scheduler.async { [weak self] in
+            guard let self else { return }
+            completion(self.measureNow(timing: timing, now: now))
+        }
+    }
+
+    private func measureNow(timing: (AudioObjectID) -> DeviceTiming,
+                            now: () -> Date) -> Result<LatencyMeasurement, LatencyMeasurementError> {
+        guard started, !asleep, let session, let token = session.token else { return .failure(.notRunning) }
+        guard let duette = audioSystem.deviceID(forUID: DuetteDriver.deviceUID) else { return .failure(.driverMissing) }
+        let buffer = configuration.bufferFrameSize
+        let estimate = LatencyModel.estimate(aggregate: timing(session.aggregate), duette: timing(duette),
+                                             sampleRate: session.sampleRate)
+
+        // 1. Pause: the probe must be the sink's only writer. The aggregate, the tap and the
+        // layout stay as they are.
+        audioSystem.stopIO(token)
+        self.session?.token = nil
+        let measured = Result { () throws -> LoopbackMeasurement in
+            try audioSystem.measureLoopback(sink: session.sinkID, duette: duette, bufferFrameSize: buffer,
+                                            sampleRate: session.sampleRate)
+        }
+
+        // 2. Resume on the same aggregate. If it will not start, build everything again.
+        do {
+            self.session?.token = try audioSystem.startIO(on: session.aggregate, engine: engine)
+        } catch {
+            teardown()
+            fail(error, "start the engine again after measuring the latency")
+        }
+
+        switch measured {
+        case .failure(let error):
+            if let error = error as? LatencyMeasurementError { return .failure(error) }
+            return .failure(.failed(Self.coreAudioError(error, "measure the latency")))
+        case .success(let loopback):
+            let measurement = LatencyMeasurement(date: now(), loopback: loopback, estimate: estimate,
+                                                 sampleRate: session.sampleRate)
+            statusLock.lock()
+            latestMeasurement = measurement
+            statusLock.unlock()
+            return .success(measurement)
         }
     }
 

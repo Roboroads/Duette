@@ -191,7 +191,16 @@ func runLoopback(_ ctx: Context) throws {
     // Every take is judged on all four counts. A take that fails with no overload during it is a
     // fault in the loopback and fails the command at once; one that fails while the HAL reported
     // a late cycle may be the machine's doing, so it is taken again (at most 5 takes in all).
-    let limit = reported + 16
+    //
+    // The latency must match what the HAL reports to within 16 frames either way: more would be
+    // buffering the driver does not report, less a latency or safety offset it reports but does
+    // not use. Either would make apps that line up "Duette" by those figures (and the app's own
+    // estimate) wrong.
+    let tolerance = 16.0
+    func honest(_ mean: Double?) -> Bool {
+        guard let mean else { return false }
+        return abs(mean - reported) <= tolerance
+    }
     // The 1 kHz tone the writer plays after the chirp, as recorded.
     func tail(_ take: Take) -> [Float]? {
         guard let index = take.result?.chirpRecordingIndex else { return nil }
@@ -204,8 +213,8 @@ func runLoopback(_ ctx: Context) throws {
         var found: [String] = []
         if result.confidence < 0.9 { found.append(String(format: "chirp confidence %.3f", result.confidence)) }
         if result.sampleOffset != 0 { found.append("sample offset \(result.sampleOffset.map { String(format: "%+.0f", $0) } ?? "unknown")") }
-        if (result.latencyMean ?? .infinity) > limit {
-            found.append(String(format: "latency %.0f frames over %.0f", result.latencyMean ?? -1, limit))
+        if !honest(result.latencyMean) {
+            found.append(String(format: "latency %.0f frames, the HAL says %.0f", result.latencyMean ?? -1, reported))
         }
         let silent = result.silenceDelay.map { $0 <= Double(buffer) } ?? false
         if !silent || result.nonZeroAfterStop != 0 || result.observedAfterStop < Double(4 * Int(buffer)) {
@@ -260,9 +269,9 @@ func runLoopback(_ ctx: Context) throws {
     // the jitter of when the HAL wakes the two I/O threads, which on the CI machine is not stable
     // enough to gate.
     if let worst = result.latencyMax, let mean = result.latencyMean {
-        r.check("latency", mean <= limit, Format.frames(mean, sampleRate: rate),
-                detail: String(format: "mean over the chirp, writer IOProc call to reader IOProc call; limit: the HAL's %.0f + 16 = %.0f",
-                               reported, limit))
+        r.check("latency", honest(mean), Format.frames(mean, sampleRate: rate),
+                detail: String(format: "mean over the chirp, writer IOProc call to reader IOProc call; want the HAL's %.0f, give or take %.0f",
+                               reported, tolerance))
         r.info("latency.worst", Format.frames(worst, sampleRate: rate), detail: "the latest single frame of the chirp")
     } else {
         r.check("latency", false, "not measured")

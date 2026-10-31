@@ -180,7 +180,7 @@ public enum LoopbackProbe {
     /// Whether a take can be trusted: the chirp was found cleanly, at the sample time it was
     /// written, and its latency measured.
     public static func isGood(_ result: LoopbackResult) -> Bool {
-        false
+        result.confidence >= 0.9 && result.sampleOffset == 0 && result.latencyMean != nil
     }
 
     /// Measures; blocks for about a second per take.
