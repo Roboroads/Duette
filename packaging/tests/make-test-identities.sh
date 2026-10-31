@@ -5,7 +5,8 @@
 #
 #   packaging/tests/make-test-identities.sh <dir>
 #
-# Writes into <dir>: application.p12.b64, installer.p12.b64 (base64 text) and password.
+# Writes into <dir>: application.p12.b64, installer.p12.b64 (base64 text), password and the
+# public certificates application.pem and installer.pem.
 set -euo pipefail
 
 dir="${1:-}"
@@ -43,5 +44,6 @@ EOF
 
 make_identity application "Developer ID Application: Duette CI Probe (TEST123456)" "codeSigning"
 make_identity installer "Developer ID Installer: Duette CI Probe (TEST123456)" "codeSigning, 1.2.840.113635.100.4.13"
-rm -f ./*.key ./*.pem ./*.cnf ./*.p12
-echo "Wrote application.p12.b64, installer.p12.b64 and password to $dir"
+# Keep the two public certificates (application.pem, installer.pem) so a caller can trust them.
+rm -f ./*.key ./*.cnf ./*.p12
+echo "Wrote application.p12.b64, installer.p12.b64, the .pem certificates and password to $dir"

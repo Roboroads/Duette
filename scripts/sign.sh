@@ -7,8 +7,9 @@
 #                                    duettectl. Developer ID with the hardened
 #                                    runtime and a secure timestamp when a
 #                                    certificate is available, ad-hoc otherwise.
-#   scripts/sign.sh identity <kind>  Print the SHA-1 of the "app" or "installer"
-#                                    identity, or nothing if there is none.
+#   scripts/sign.sh identity <kind>  Print the "app" identity (SHA-1, for codesign)
+#                                    or the "installer" identity (common name, for
+#                                    productbuild). Nothing if there is none.
 #   scripts/sign.sh keychain         Print the temporary keychain path, if it exists.
 #   scripts/sign.sh cleanup          Delete the temporary keychain.
 #
@@ -18,7 +19,8 @@
 #   MACOS_CERT_PASSWORD              password of both .p12 files
 #   APPLE_TEAM_ID                    if set, only identities of this team are used
 #   DUETTE_APP_IDENTITY              use this codesign identity instead of searching
-#   DUETTE_INSTALLER_IDENTITY        use this productbuild identity instead of searching
+#   DUETTE_INSTALLER_IDENTITY        use this productbuild identity (a common name)
+#                                    instead of searching
 #   DUETTE_APP_ENTITLEMENTS          entitlements file for the app
 #                                    (default app/Duette/Duette.entitlements)
 #   DUETTE_OUT_DIR                   where the products are (default build/out)
@@ -34,11 +36,13 @@ APP_ENTITLEMENTS="${DUETTE_APP_ENTITLEMENTS:-app/Duette/Duette.entitlements}"
 
 die() { echo "sign.sh: $*" >&2; exit 1; }
 
-# find_identity <name prefix>: print the SHA-1 of the first matching identity.
+# find_identity_line <kind>: print the first `security find-identity` line of an
+# identity whose name starts with <kind>, for example:
+#   1) 3360607FE777ABA51F596B14A120D0CECDDB1017 "Developer ID Installer: Name (TEAMID)"
 # Looks in the temporary keychain when it exists, in the default search list
 # otherwise (a developer's own Mac). Valid identities win over invalid ones.
-find_identity() {
-  local kind="$1" valid_flag listing hash
+find_identity_line() {
+  local kind="$1" valid_flag listing line
   for valid_flag in "-v" ""; do
     if [ -f "$KEYCHAIN_FILE" ]; then
       # shellcheck disable=SC2086
@@ -47,23 +51,36 @@ find_identity() {
       # shellcheck disable=SC2086
       listing="$(security find-identity $valid_flag 2>/dev/null || true)"
     fi
-    hash="$(printf '%s\n' "$listing" | grep -F "\"$kind: " | {
+    line="$(printf '%s\n' "$listing" | grep -F "\"$kind: " | {
       if [ -n "${APPLE_TEAM_ID:-}" ]; then grep -F "(${APPLE_TEAM_ID})" || true; else cat; fi
-    } | awk 'NR == 1 { print $2 }')" || true
-    if [ -n "$hash" ]; then
-      printf '%s\n' "$hash"
+    } | head -n 1)" || true
+    if [ -n "$line" ]; then
+      printf '%s\n' "$line"
       return 0
     fi
   done
   return 0
 }
 
+# Hash for codesign, which accepts it. Name for productbuild, which looks the
+# identity up by its common name and does not find it by hash.
+identity_hash() { awk '{ print $2 }' <<< "$1"; }
+identity_name() { sed -n 's/^[^"]*"\([^"]*\)".*$/\1/p' <<< "$1"; }
+
 app_identity() {
-  if [ -n "${DUETTE_APP_IDENTITY:-}" ]; then printf '%s\n' "$DUETTE_APP_IDENTITY"; else find_identity "Developer ID Application"; fi
+  if [ -n "${DUETTE_APP_IDENTITY:-}" ]; then
+    printf '%s\n' "$DUETTE_APP_IDENTITY"
+  else
+    identity_hash "$(find_identity_line "Developer ID Application")"
+  fi
 }
 
 installer_identity() {
-  if [ -n "${DUETTE_INSTALLER_IDENTITY:-}" ]; then printf '%s\n' "$DUETTE_INSTALLER_IDENTITY"; else find_identity "Developer ID Installer"; fi
+  if [ -n "${DUETTE_INSTALLER_IDENTITY:-}" ]; then
+    printf '%s\n' "$DUETTE_INSTALLER_IDENTITY"
+  else
+    identity_name "$(find_identity_line "Developer ID Installer")"
+  fi
 }
 
 b64_to_file() { # <base64 text> <file>
