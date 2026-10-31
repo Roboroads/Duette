@@ -18,7 +18,8 @@ final class HALSmokeTests: XCTestCase {
     func testDeviceListAndUIDLookups() throws {
         let ids = try HAL.deviceIDs()
         for id in ids {
-            let info = try HAL.deviceInfo(id)
+            // An aggregate another test just destroyed can still be listed for a moment.
+            guard let info = try? HAL.deviceInfo(id), !info.uid.hasPrefix(DuetteDriver.aggregateUIDPrefix) else { continue }
             print("HAL device: \(info)")
             XCTAssertEqual(HAL.deviceID(forUID: info.uid), id)
         }
