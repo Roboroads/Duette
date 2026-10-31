@@ -54,4 +54,18 @@ final class SingleInstanceTests: XCTestCase {
         let all = [instance(10, launched: 5), instance(11, launched: nil)]
         XCTAssertEqual(SingleInstanceGuard.olderInstances(among: all, ownPID: 10), [11])
     }
+
+    // MARK: What a reopen or a handover shows
+
+    func testAReopenBeforeSetupIsDoneShowsTheGuide() {
+        XCTAssertEqual(UserWindow.forReopen(onboardingDone: false), .guide)
+    }
+
+    func testAReopenAfterSetupShowsTheRunningWindow() {
+        XCTAssertEqual(UserWindow.forReopen(onboardingDone: true), .running)
+    }
+
+    func testTheOtherCopyIsToldToShowItselfWithAMessageBothCopiesKnow() {
+        XCTAssertEqual(SingleInstanceGuard.showWindowNotification.rawValue, "me.roboroads.duette.show-window")
+    }
 }

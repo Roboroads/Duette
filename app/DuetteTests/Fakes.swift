@@ -253,6 +253,15 @@ final class World {
     var openedURLs: [URL] = []
     var driverToneCalls: [Bool] = []
     var driverToneFails = false
+    /// The driver's own test tone as the driver reports it; nil when there is no driver.
+    var driverToneIsOn: Bool? = false
+    /// Where the save panel "saves"; nil when the user cancels.
+    var exportDestination: URL?
+    private(set) var suggestedNames: [String] = []
+    private(set) var revealedURLs: [URL] = []
+    var zipFails = false
+    /// A folder of its own for everything the diagnostics export writes.
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("duette-world-\(UUID().uuidString)")
 
     private(set) var settingsPaneOpened = 0
 
@@ -267,6 +276,7 @@ final class World {
 
     deinit {
         defaults.removePersistentDomain(forName: suiteName)
+        try? FileManager.default.removeItem(at: scratch)
     }
 
     /// Discord is running and playing audio from a helper.
@@ -304,11 +314,28 @@ final class World {
             setDriverTone: { [unowned self] on in
                 self.driverToneCalls.append(on)
                 if self.driverToneFails { throw FakeLoginItem.Failure() }
+                self.driverToneIsOn = on
             },
+            driverToneState: { [unowned self] in self.driverToneIsOn },
             deviceTiming: { _ in DeviceTiming(bufferFrameSize: 128) },
             openURL: { [unowned self] in self.openedURLs.append($0) },
             openLoginItemsSettings: { [unowned self] in self.settingsPaneOpened += 1 },
-            runOnMain: { $0() })
+            runOnMain: { $0() },
+            runInBackground: { $0() },
+            chooseDestination: { [unowned self] name in
+                self.suggestedNames.append(name)
+                return self.exportDestination
+            },
+            reveal: { [unowned self] in self.revealedURLs.append($0) },
+            diagnosticsExporter: DiagnosticsExporter(
+                scratch: scratch,
+                appPath: "/Applications/Duette.app",
+                driverPath: "/Library/Audio/Plug-Ins/HAL/Duette.driver",
+                appLog: { "app log" },
+                runCommand: { _, _ in "ok" },
+                makeZip: { [unowned self] folder, zip in
+                    self.zipFails ? false : DiagnosticsExporter.zipWithDitto(folder, zip)
+                }))
     }
 
     func makeModel(settings: Settings? = nil, onboardingDone: Bool = true) -> AppModel {

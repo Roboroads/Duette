@@ -14,20 +14,19 @@ final class DiagnosticsExporterTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeExporter(desktop: URL, commands: @escaping (String, [String]) -> String = { path, args in
-        "output of \(path) \(args.joined(separator: " "))"
-    }) -> DiagnosticsExporter {
+    private var scratch: URL { root.appendingPathComponent("scratch") }
+
+    private func makeExporter(
+        scratch: URL? = nil,
+        makeZip: @escaping (URL, URL) -> Bool = DiagnosticsExporter.zipWithDitto
+    ) -> DiagnosticsExporter {
         DiagnosticsExporter(
-            desktop: desktop,
-            fallback: root.appendingPathComponent("fallback"),
+            scratch: scratch ?? self.scratch,
             appPath: "/Applications/Duette.app",
             driverPath: "/Library/Audio/Plug-Ins/HAL/Duette.driver",
             appLog: { "app log line" },
-            runCommand: { path, args in
-                // The zip is made for real; everything else is canned.
-                if path == "/usr/bin/ditto" { return CommandRunner.run(path, args) }
-                return commands(path, args)
-            })
+            runCommand: { path, args in "output of \(path) \(args.joined(separator: " "))" },
+            makeZip: makeZip)
     }
 
     private var date: Date { Date(timeIntervalSince1970: 1_793_000_000) } // 2026-10-26 07:33:20 UTC
@@ -38,17 +37,14 @@ final class DiagnosticsExporterTests: XCTestCase {
     }
 
     func testTheZipHoldsEveryFileThePlanLists() throws {
-        let desktop = root.appendingPathComponent("Desktop")
-        try FileManager.default.createDirectory(at: desktop, withIntermediateDirectories: true)
-        let exporter = makeExporter(desktop: desktop)
-
-        let result = try exporter.export(report: Data("{\"ok\":true}".utf8), now: date, timeZone: utc)
-        XCTAssertTrue(result.onDesktop)
-        XCTAssertEqual(result.url.lastPathComponent, "Duette-Diagnostics-2026-10-26-073320.zip")
-        XCTAssertEqual(result.url.deletingLastPathComponent().path, desktop.path)
+        let zip = try makeExporter().build(report: Data("{\"ok\":true}".utf8), now: date, timeZone: utc)
+        XCTAssertEqual(zip.lastPathComponent, "Duette-Diagnostics-2026-10-26-073320.zip")
+        XCTAssertEqual(zip.deletingLastPathComponent().path, scratch.path, "it is built in the scratch folder, not saved anywhere")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: scratch.path), [zip.lastPathComponent],
+                       "the folder it was zipped from is cleaned up")
 
         let unpacked = root.appendingPathComponent("unpacked")
-        _ = CommandRunner.run("/usr/bin/ditto", ["-x", "-k", result.url.path, unpacked.path])
+        _ = CommandRunner.run("/usr/bin/ditto", ["-x", "-k", zip.path, unpacked.path])
         let folder = unpacked.appendingPathComponent("Duette-Diagnostics-2026-10-26-073320")
         func text(_ name: String) throws -> String {
             try String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
@@ -65,16 +61,40 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(signatures.contains("Duette.driver"))
     }
 
-    func testWhenTheDesktopCannotBeWrittenTheZipGoesToTheFallbackFolder() throws {
-        let exporter = makeExporter(desktop: URL(fileURLWithPath: "/nonexistent-duette-folder/Desktop"))
-        let result = try exporter.export(report: Data("{}".utf8), now: date, timeZone: utc)
-        XCTAssertFalse(result.onDesktop)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: result.url.path))
-        XCTAssertEqual(result.url.deletingLastPathComponent().lastPathComponent, "fallback")
+    func testAZipThatFailsIsAnError() {
+        let exporter = makeExporter(makeZip: { _, _ in false })
+        XCTAssertThrowsError(try exporter.build(report: Data("{}".utf8), now: date, timeZone: utc)) { error in
+            XCTAssertEqual(error as? ExportError, .couldNotZip)
+        }
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: scratch.path)) ?? []
+        XCTAssertEqual(left, [], "nothing is left behind")
     }
 
-    func testTheCommandRunnerReturnsOutputAndSurvivesAMissingProgram() {
-        XCTAssertEqual(CommandRunner.run("/bin/echo", ["hello"]).trimmingCharacters(in: .whitespacesAndNewlines), "hello")
+    func testAZipThatWasNeverWrittenIsAnErrorToo() {
+        let exporter = makeExporter(makeZip: { _, _ in true })
+        XCTAssertThrowsError(try exporter.build(report: Data("{}".utf8), now: date, timeZone: utc)) { error in
+            XCTAssertEqual(error as? ExportError, .couldNotZip)
+        }
+    }
+
+    func testAFolderThatCannotBeWrittenIsAnError() {
+        let exporter = makeExporter(scratch: URL(fileURLWithPath: "/nonexistent-duette-folder/scratch"))
+        XCTAssertThrowsError(try exporter.build(report: Data("{}".utf8), now: date, timeZone: utc)) { error in
+            XCTAssertEqual(error as? ExportError, .couldNotWrite)
+        }
+    }
+
+    func testTheCommandRunnerReturnsOutputAndTheExitStatus() {
+        let echo = CommandRunner.execute("/bin/echo", ["hello"])
+        XCTAssertEqual(echo.output.trimmingCharacters(in: .whitespacesAndNewlines), "hello")
+        XCTAssertEqual(echo.status, 0)
+        XCTAssertEqual(CommandRunner.execute("/usr/bin/false", []).status, 1)
+    }
+
+    func testTheCommandRunnerSurvivesAMissingProgram() {
+        let missing = CommandRunner.execute("/nonexistent/program", [])
+        XCTAssertTrue(missing.output.contains("could not run"))
+        XCTAssertEqual(missing.status, -1)
         XCTAssertTrue(CommandRunner.run("/nonexistent/program", []).contains("could not run"))
     }
 }

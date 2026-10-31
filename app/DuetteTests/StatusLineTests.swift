@@ -76,6 +76,18 @@ final class StatusLineTests: XCTestCase {
         XCTAssertEqual(result.fix, .openSystemAudioSettings)
     }
 
+    func testTheSystemAudioFixSaysWhereToSwitchDuetteOn() {
+        let result = line(.running(.both), sources: .both, silent: true)
+        XCTAssertEqual(result.hint, "Scroll down to System Audio Recording Only and switch on Duette")
+    }
+
+    func testOnlyTheSystemAudioFixHasAHint() {
+        XCTAssertNil(line(.running(.both), sources: .both).hint)
+        XCTAssertNil(line(.running(.appOnly), sources: .appOnly, micPermission: .denied).hint)
+        XCTAssertNil(line(.waitingForApp(bundleID: discord), sources: .micOnly).hint)
+        XCTAssertNil(line(.error(status: -50, attempt: 1)).hint)
+    }
+
     func testAMissingMicrophoneIsOrange() {
         let result = line(.running(.appOnly), sources: .appOnly)
         XCTAssertEqual(result.tone, .waiting)
@@ -134,6 +146,7 @@ final class StatusLineTests: XCTestCase {
                         let result = line(state, micPermission: permission, setupDone: setupDone, silent: silent)
                         messages.append(result.message)
                         if let fix = result.fix { messages.append(fix.title) }
+                        if let hint = result.hint { messages.append(hint) }
                     }
                 }
             }

@@ -222,17 +222,67 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(world.makeSettings().onboardingDone)
     }
 
-    func testTheAppSoundStepStartsTheEngineSoMacOSAsks() {
-        world.launchDiscord()
-        let settings = world.settingsOfAnEarlierLaunch()
-        settings.appBundleID = World.discord
-        let model = world.makeModel(settings: settings, onboardingDone: false)
+    func testPassingTheAppSoundScreenFinishesSetupAndStartsTheEngine() {
+        let model = world.makeModel(onboardingDone: false)
         model.start()
-        model.startEngineForGuide()
+        model.guideNext()
+        model.guideNext()
+        XCTAssertEqual(model.guide.step, .appSound)
+        XCTAssertFalse(model.onboardingDone, "still on the screen that asks about the app's sound")
+        XCTAssertEqual(world.audio.ioRunning, 0)
+
+        model.guideNext()
+        XCTAssertEqual(model.guide.step, .finish)
+        XCTAssertTrue(model.onboardingDone, "both permission screens are behind us")
+        XCTAssertEqual(world.audio.ioRunning, 1, "the engine runs, which is what makes macOS ask about the app")
+        XCTAssertTrue(world.makeSettings().onboardingDone)
+    }
+
+    func testClosingTheGuideOnTheAppSoundScreenCountsAsDone() {
+        let model = world.makeModel(onboardingDone: false)
+        model.start()
+        model.guideNext()
+        model.guideNext()
+        model.guideWindowClosed()
+        XCTAssertTrue(model.onboardingDone)
         XCTAssertEqual(world.audio.ioRunning, 1)
-        XCTAssertFalse(model.onboardingDone, "the guide is not finished yet")
-        model.completeOnboarding()
-        XCTAssertEqual(world.audio.ioRunning, 1, "finishing does not start a second engine")
+        XCTAssertTrue(world.makeSettings().onboardingDone, "later launches start the engine")
+    }
+
+    func testClosingTheGuideOnTheLastScreenKeepsItDoneWithOneEngine() {
+        let model = world.makeModel(onboardingDone: false)
+        model.start()
+        model.guideNext()
+        model.guideNext()
+        model.guideNext()
+        model.guideWindowClosed()
+        XCTAssertTrue(model.onboardingDone)
+        XCTAssertEqual(world.audio.ioRunning, 1)
+    }
+
+    func testClosingTheGuideBeforeThePermissionScreensEndsDoesNotCount() {
+        let model = world.makeModel(onboardingDone: false)
+        model.start()
+        model.guideNext()
+        XCTAssertEqual(model.guide.step, .microphone)
+        model.guideWindowClosed()
+        XCTAssertFalse(model.onboardingDone)
+        XCTAssertEqual(world.audio.ioRunning, 0)
+    }
+
+    func testShowingTheGuideAgainStartsAtTheFirstScreen() {
+        let model = world.makeModel(onboardingDone: false)
+        model.guideNext()
+        model.guideNext()
+        model.resetGuide()
+        XCTAssertEqual(model.guide.step, .welcome)
+    }
+
+    func testBackGoesToThePreviousScreen() {
+        let model = world.makeModel(onboardingDone: false)
+        model.guideNext()
+        model.guideBack()
+        XCTAssertEqual(model.guide.step, .welcome)
     }
 
     // MARK: Permissions
@@ -380,6 +430,126 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.engineToneOn)
         model.setEngineTone(false)
         XCTAssertFalse(model.controller.engine.testTone)
+    }
+
+    func testTheDriverToneIsReadFromTheDriverAtStart() {
+        world.driverToneIsOn = true
+        let model = world.makeModel()
+        model.start()
+        XCTAssertTrue(model.driverToneOn, "it keeps beeping in the driver after Duette quits, so a new run must show it")
+    }
+
+    func testTheDriverToneIsReadAgainWhenTheMenuOpens() {
+        let model = world.makeModel()
+        model.start()
+        XCTAssertFalse(model.driverToneOn)
+        world.driverToneIsOn = true
+        model.menuDidOpen()
+        XCTAssertTrue(model.driverToneOn)
+        world.driverToneIsOn = false
+        model.menuDidOpen()
+        XCTAssertFalse(model.driverToneOn)
+    }
+
+    func testWithoutADriverTheToneShowsOff() {
+        world.driverToneIsOn = nil
+        let model = world.makeModel()
+        model.start()
+        XCTAssertFalse(model.driverToneOn)
+    }
+
+    func testAFailedSwitchOffLeavesTheToneShownOn() {
+        world.driverToneIsOn = true
+        let model = world.makeModel()
+        model.start()
+        world.driverToneFails = true
+        model.setDriverTone(false)
+        XCTAssertTrue(model.driverToneOn, "the tone is still playing, so the switch must say so")
+        XCTAssertNotNil(model.message)
+    }
+
+    func testQuittingSwitchesTheDriverToneOff() {
+        world.driverToneIsOn = true
+        let model = world.makeModel()
+        model.start()
+        model.stop()
+        XCTAssertEqual(world.driverToneCalls, [false])
+        XCTAssertEqual(world.driverToneIsOn, false)
+    }
+
+    func testQuittingWithTheToneOffLeavesTheDriverAlone() {
+        let model = world.makeModel()
+        model.start()
+        model.stop()
+        XCTAssertTrue(world.driverToneCalls.isEmpty)
+    }
+
+    // MARK: Export Diagnostics
+
+    private func makeDestination(named name: String = "Duette-Diagnostics-test.zip") throws -> URL {
+        let folder = world.scratch.appendingPathComponent("chosen")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(name)
+    }
+
+    func testExportAsksWhereToSaveSavesThereAndShowsTheFile() throws {
+        let destination = try makeDestination()
+        world.exportDestination = destination
+        let model = world.makeModel()
+        model.start()
+        model.exportDiagnostics()
+        XCTAssertEqual(model.export, .saved(destination))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertEqual(world.revealedURLs, [destination], "Finder shows the saved file")
+        let suggested = try XCTUnwrap(world.suggestedNames.first)
+        XCTAssertTrue(suggested.hasPrefix("Duette-Diagnostics-") && suggested.hasSuffix(".zip"))
+        let left = try FileManager.default.contentsOfDirectory(atPath: world.scratch.path)
+        XCTAssertEqual(left, ["chosen"], "no half-made files stay behind")
+    }
+
+    func testCancellingTheSavePanelSavesNothing() throws {
+        world.exportDestination = nil
+        let model = world.makeModel()
+        model.start()
+        model.exportDiagnostics()
+        XCTAssertEqual(model.export, .idle)
+        XCTAssertTrue(world.revealedURLs.isEmpty)
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: world.scratch.path)) ?? []
+        XCTAssertEqual(left, [])
+    }
+
+    func testAFailedZipShowsAPlainErrorAndNeverAsksWhereToSave() {
+        world.zipFails = true
+        let model = world.makeModel()
+        model.start()
+        model.exportDiagnostics()
+        guard case .failed(let message) = model.export else { return XCTFail("expected a failure, got \(model.export)") }
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertFalse(message.contains("ditto"), "plain words, not program names")
+        XCTAssertTrue(world.suggestedNames.isEmpty)
+        XCTAssertTrue(world.revealedURLs.isEmpty)
+    }
+
+    func testAnUnwritablePlaceShowsAPlainError() {
+        world.exportDestination = URL(fileURLWithPath: "/nonexistent-duette-folder/Duette-Diagnostics.zip")
+        let model = world.makeModel()
+        model.start()
+        model.exportDiagnostics()
+        guard case .failed(let message) = model.export else { return XCTFail("expected a failure, got \(model.export)") }
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertTrue(world.revealedURLs.isEmpty)
+    }
+
+    func testChoosingAnExistingFileReplacesIt() throws {
+        let destination = try makeDestination()
+        try Data("old".utf8).write(to: destination)
+        world.exportDestination = destination
+        let model = world.makeModel()
+        model.start()
+        model.exportDiagnostics()
+        XCTAssertEqual(model.export, .saved(destination))
+        let size = try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int
+        XCTAssertGreaterThan(size ?? 0, 3, "the new zip took the old file's place")
     }
 
     // MARK: Choices for the pickers
