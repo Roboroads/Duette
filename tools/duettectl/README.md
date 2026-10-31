@@ -31,6 +31,7 @@ stuck in a Core Audio call.
 | `dcli` | The driver's `'dcli'` lists this process while it reads "Duette" directly, through its own aggregate (`--mode aggregate`, as call apps do) or through the voice-processing unit (`--mode vpio`), and drops it after. |
 | `feedback-loop` | A separate process that plays audio and reads "Duette" through an aggregate: `'dcli'` names it, ProcessCatalog groups it, FeedbackLoopDetector fires, and Duette's own reading never counts. `--controller` also checks EngineController's warning (needs a working tap). |
 | `soak` | Engine with the test mic (and `--with-app` a tapped tone) for `--minutes`: every second of "Duette" has the tones, no dropouts, no overloads. |
+| `overloads` | A control: counts the HAL's late-cycle reports (`kAudioDeviceProcessorOverload`) on any device, or an aggregate of two (`--with`), with an IOProc that only copies samples. It tells a machine that cannot keep time from a problem in Duette. |
 | `record`, `play`, `make-tone`, `analyze`, `set-default`, `set-rate`, `whoami` | Tools for the above and for poking at a machine by hand. |
 
 Apps given as `--pid` are passed to EngineController as the bundle ID `pid:<n>`: a CLI process

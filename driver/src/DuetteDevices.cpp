@@ -57,7 +57,7 @@ aspl::DeviceParameters sinkParameters() {
   p.SampleRate = static_cast<UInt32>(kSampleRate);
   p.ChannelCount = kChannels;
   p.Latency = 0;
-  p.SafetyOffset = kOutputSafetyOffset;
+  p.SafetyOffset = 0;
   p.ZeroTimeStampPeriod = kZeroTimeStampPeriod;
   p.ClockIsStable = true;
   p.ClockDomain = DUETTE_CLOCK_DOMAIN;

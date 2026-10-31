@@ -283,6 +283,51 @@ func runPlay(_ ctx: Context) throws {
     ctx.reporter.info("played", "\(player.cycles) cycles into '\(Device.name(device))'")
 }
 
+/// A control measurement: how often the HAL reports a late I/O cycle on any device here, with an
+/// IOProc that only copies samples. Run against one of the machine's own devices it tells
+/// whether overloads come from the machine or from Duette.
+func runOverloads(_ ctx: Context) throws {
+    let r = ctx.reporter
+    let uid = ctx.string("device") ?? DuetteDriver.sinkUID
+    let seconds = ctx.double("seconds") ?? 60
+    var device = try Device.require(uid: uid, timeout: 10)
+    var name = Device.name(device)
+    // With --with: a private aggregate of the device (main) and a second one with drift
+    // compensation, like the engine's sink and mic.
+    var aggregate: ClientAggregate?
+    if let second = ctx.string("with") {
+        let other = try Device.require(uid: second, timeout: 10)
+        let built = try ClientAggregate(inputUID: second, outputUID: uid)
+        aggregate = built
+        device = built.id
+        name = "an aggregate of \(name) and \(Device.name(other))"
+    }
+    defer { aggregate = nil }
+    try Device.setBufferFrameSize(device, ctx.buffer)
+    let log = OverloadLog()
+    log.watch(device, name: name)
+    let output = (try? AudioObject(device).bufferChannels(scope: kAudioObjectPropertyScopeOutput))?.reduce(0, +) ?? 0
+    var player: Player?
+    var recorder: Recorder?
+    if output > 0 {
+        player = try Player(device: device, signal: [], tailHz: toneHz, tailAmplitude: 0.25,
+                            sampleRate: Device.nominalRate(device) ?? Device.sampleRate)
+        try player?.start()
+        player?.arm()
+    } else {
+        recorder = try Recorder(device: device, seconds: 5)
+        try recorder?.start()
+    }
+    Stage.set("counting overloads on \(name) for \(Int(seconds)) s")
+    idle(seconds)
+    player?.stop()
+    recorder?.stop()
+    let count = log.count(device)
+    r.info("count", "\(count) in \(Int(seconds)) s", detail: String(format: "'%@' (%@), %@, buffer %u frames: %.1f per minute",
+                                                               name, uid, output > 0 ? "playing" : "recording", ctx.buffer,
+                                                               Double(count) / seconds * 60))
+}
+
 func runMakeTone(_ ctx: Context) throws {
     let rate = ctx.double("rate") ?? 48000
     let tone = Sine.make(frequency: ctx.double("hz") ?? toneHz, dbfs: ctx.double("dbfs") ?? dbfsMinus12,

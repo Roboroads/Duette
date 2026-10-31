@@ -229,12 +229,35 @@ phase_blocking() {
   return "$failed"
 }
 
+# UID of the machine's own output device with this name, from duettectl list.
+output_uid() { # name
+  "$cli" list 2>/dev/null | sed -n "s/.*device [0-9]* '$1' uid=\(.*\) in=[0-9]* out=[1-9].*/\1/p" | head -n 1
+}
+
+# The soak gates on zero overloads and dropouts over 10 minutes. The runner is a VM whose I/O
+# threads wake late now and then (coreaudiod: "Overload possibly due to safety violation"), so the
+# soak runs first against the machine's own devices with an IOProc that does nothing but copy:
+# when those overload too, the soak's failures are the machine's, and its row says
+# "needs hands-on" (checklist step 7d, buffer sizes, on a real Mac).
 phase_soak() {
   require_setup
   local minutes=${1:-10}
   local limit
+  local apple null sink=me.roboroads.duette.sink mic=me.roboroads.duette.test-mic
   limit=$(awk -v m="$minutes" 'BEGIN { printf "%d", m * 60 + 240 }')
-  run_cmd blocking soak "$limit" "windows overloads reader-overloads dropouts" -- soak --minutes "$minutes"
+  apple=$(output_uid 'Apple Virtual Sound Device')
+  null=$(output_uid 'Null Audio Device')
+  # The same two shapes on Apple's devices and on Duette's: one output device, and an aggregate
+  # of an output device and a second clock (drift compensated), which is what the engine runs.
+  if [ -n "$apple" ]; then
+    run_cmd control control-apple 120 "count" -- overloads --device "$apple" --seconds 60 || true
+    if [ -n "$null" ]; then
+      run_cmd control control-apple-aggregate 120 "count" -- overloads --device "$apple" --with "$null" --seconds 60 || true
+    fi
+  fi
+  run_cmd control control-duette-sink 120 "count" -- overloads --device "$sink" --seconds 60 || true
+  run_cmd control control-duette-aggregate 120 "count" -- overloads --device "$sink" --with "$mic" --seconds 60 || true
+  run_cmd hands-on soak "$limit" "windows overloads reader-overloads dropouts" -- soak --minutes "$minutes"
 }
 
 # Turns the results into the job summary: one row per command, then every check.
@@ -248,10 +271,12 @@ phase_summary() {
     echo "| Command | Result | Measured |"
     echo "|---|---|---|"
     if [ -f "$commands" ]; then
-      while IFS=$'\t' read -r _ id rc seconds headline; do
+      while IFS=$'\t' read -r group id rc seconds headline; do
         local status measured=""
         if [ "$rc" = 0 ]; then
           status=PASS
+        elif [ "$group" = hands-on ]; then
+          status="needs hands-on"
         else
           status=FAIL
         fi

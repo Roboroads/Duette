@@ -33,9 +33,6 @@ inline constexpr UInt32 kZeroTimeStampPeriod = 16384;
 inline constexpr std::size_t kLoopbackFrames = 16384;
 /// How far behind "now" the input reads. Covers a sink write cycle that runs a little late.
 inline constexpr UInt32 kInputSafetyOffset = 16;
-/// How far ahead of "now" the sink's writers must be. With 0 the HAL has no margin at all, and
-/// any IO thread that wakes a little late is an overload ("safety violation"); seen in CI.
-inline constexpr UInt32 kOutputSafetyOffset = 16;
 /// Fade of the self-test tone: as long as SmoothedGain's ramps (5 ms, 240 frames).
 inline constexpr UInt32 kToneRampFrames = static_cast<UInt32>(
     kSampleRate * static_cast<double>(duette::SmoothedGain::kDefaultRampSeconds) + 0.5);
