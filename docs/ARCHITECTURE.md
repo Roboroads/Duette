@@ -160,5 +160,5 @@ The app's `AppModel` owns the `EngineController` and `Settings` (UserDefaults, w
 - There are three gain stages, not two: the app, the microphone and a master after the mix.
 - Feedback detection uses `'dcli'` together with the HAL's process objects.
 - The driver doesn't take libASPL's device mutex on the I/O path, and its writer tolerates several writers.
-- Nothing resamples except the aggregate's drift compensation. `duettectl rate-mismatch` checks a tap at 44.1 kHz only (the test speaker). A microphone at another rate has no automated check, and neither does a 44.1 kHz tap on a real Mac outside the hands-on test in [docs/TESTING.md](TESTING.md).
+- Nothing resamples except the aggregate's drift compensation. `duettectl rate-mismatch` checks a tap at 44.1 kHz only (the test speaker). A microphone at another rate has no automated check.
 - "Export Diagnostics…" doesn't write to the Desktop by itself. It builds the zip in a scratch folder and asks where to put it with a Save panel, which needs no permission to write to the Desktop and doesn't trigger macOS's question about it.
