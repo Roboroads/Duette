@@ -34,6 +34,8 @@ Everything in `build/out/` is a shippable build: Release configuration, arm64, u
 
 Each script runs `mkdir -p build/out` and replaces any existing product of the same name, so a re-run never mixes old and new output.
 
+The app's entitlements live at `app/Duette/Duette.entitlements`. `scripts/sign.sh` applies that file when it re-signs the app with the Developer ID certificate, and the release build fails unless the file exists, sets `com.apple.security.device.audio-input` to true and has no `com.apple.security.get-task-allow`. Keep it at that path.
+
 `macos-build` uploads everything under `build/out/` as the `duette-build` workflow artifact, also when a build step failed (but not when the run was cancelled). Nothing is uploaded if the folder is missing or empty. Artifacts are zipped, so the executable bit is lost: run `chmod +x duettectl` after downloading one.
 
 ## Version
