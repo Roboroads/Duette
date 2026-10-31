@@ -75,6 +75,11 @@ jobs:
       - name: Make stub bundles
         run: bash packaging/tests/make-stub-bundles.sh
 
+      # The signed path of build-pkg.sh uses these options; show that this macOS knows them.
+      - name: productbuild options used when signing
+        run: |
+          man productbuild | col -b | grep -n -B1 -A4 -e '--sign' -e '--timestamp' -e '--keychain' || true
+
       - name: Sign (no secrets, so ad-hoc)
         run: |
           bash scripts/sign.sh import-certs
