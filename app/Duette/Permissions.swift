@@ -40,7 +40,8 @@ enum SettingsPane {
     case microphone
     case systemAudioRecording
 
-    /// System Audio Recording lives in the "Screen & System Audio Recording" page.
+    /// System Audio Recording lives in the "Screen & System Audio Recording" page, in the list
+    /// "System Audio Recording Only" further down. StatusLine says so under the fix button.
     var url: URL {
         switch self {
         case .microphone:

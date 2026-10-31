@@ -42,6 +42,8 @@ struct StatusLine: Equatable {
     var tone: Tone
     var message: String
     var fix: FixAction?
+    /// One line under the fix button that says what to do on the page it opens.
+    var hint: String? = nil
 
     /// - Parameters:
     ///   - selectedAppName: the name of the app the user chose, or nil for "just my microphone".
@@ -71,7 +73,8 @@ struct StatusLine: Equatable {
         }
         if status.appSilentWhilePlaying, let name = selectedAppName {
             return StatusLine(tone: .problem, message: "Duette needs permission to hear \(name)",
-                              fix: .openSystemAudioSettings)
+                              fix: .openSystemAudioSettings,
+                              hint: "Scroll down to System Audio Recording Only and switch on Duette")
         }
         switch status.state {
         case .waitingForApp(let bundleID):

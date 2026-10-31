@@ -7,8 +7,18 @@ enum LoginItemState: Equatable {
     case on
     /// Registered, but the user has to allow it in System Settings > General > Login Items.
     case needsApproval
-    /// The system cannot register this copy of the app (for example it was not run from Applications).
-    case unavailable
+
+    /// The system answers "not found" for the app itself until it has been registered once, so
+    /// that counts as off: registering is what makes it known. The switch must stay usable, and a
+    /// real problem shows up as the error of register().
+    init(status: SMAppService.Status) {
+        switch status {
+        case .enabled: self = .on
+        case .requiresApproval: self = .needsApproval
+        case .notRegistered, .notFound: self = .off
+        @unknown default: self = .off
+        }
+    }
 }
 
 protocol LoginItemControlling: AnyObject {
@@ -19,13 +29,7 @@ protocol LoginItemControlling: AnyObject {
 
 final class SystemLoginItem: LoginItemControlling {
     var state: LoginItemState {
-        switch SMAppService.mainApp.status {
-        case .enabled: return .on
-        case .requiresApproval: return .needsApproval
-        case .notRegistered: return .off
-        case .notFound: return .unavailable
-        @unknown default: return .unavailable
-        }
+        LoginItemState(status: SMAppService.mainApp.status)
     }
 
     func setEnabled(_ enabled: Bool) throws {

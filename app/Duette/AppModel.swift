@@ -8,8 +8,10 @@ import os
 enum ExportState: Equatable {
     case idle
     case working
-    case saved(URL, onDesktop: Bool)
-    case failed
+    /// Saved here, where the user chose.
+    case saved(URL)
+    /// Something went wrong; the text says what, in plain words.
+    case failed(String)
 }
 
 /// The numbers under "For experts".
@@ -43,6 +45,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var mic: MicSelection
     @Published private(set) var bufferFrameSize: UInt32
     @Published private(set) var onboardingDone: Bool
+    /// The screen of the welcome guide that shows.
+    @Published private(set) var guide = OnboardingFlow()
     @Published private(set) var gains: [MixSource: Float]
     @Published private(set) var mutes: [MixSource: Bool]
 
@@ -100,6 +104,7 @@ final class AppModel: ObservableObject {
         pushMixToEngine()
         refreshPermission()
         refreshLoginItem()
+        refreshDriverTone()
         refreshChoices()
         controller.onStatusChange = { [weak self] new in self?.receive(new) }
         status = controller.status
@@ -113,13 +118,36 @@ final class AppModel: ObservableObject {
     func stop() {
         controller.stop()
         engineStarted = false
+        // The driver's test beep lives in the driver and would go on after Duette quits.
+        if services.driverToneState() == true { try? services.setDriverTone(false) }
     }
 
-    /// The guide's "allow app sound" screen: start the engine so macOS asks about the app's sound.
-    func startEngineForGuide() {
-        startEngine()
+    // MARK: The welcome guide
+
+    func guideNext() {
+        let leaving = guide.step
+        guide.next()
+        // The microphone and the app sound screens are behind us: from here on Duette runs.
+        if leaving == .appSound { completeOnboarding() }
     }
 
+    func guideBack() {
+        guide.back()
+    }
+
+    /// The guide opens at its first screen.
+    func resetGuide() {
+        guide = OnboardingFlow()
+    }
+
+    /// The guide's window closed. Closing it on or after the app sound screen counts as done: both
+    /// permission screens were shown, and the engine must run on later launches too.
+    func guideWindowClosed() {
+        if guide.step.rawValue >= OnboardingFlow.Step.appSound.rawValue { completeOnboarding() }
+    }
+
+    /// Marks setup as done and starts the engine, which is also what makes macOS ask about the
+    /// app's sound. Safe to call again.
     func completeOnboarding() {
         settings.onboardingDone = true
         onboardingDone = true
@@ -242,6 +270,7 @@ final class AppModel: ObservableObject {
     func menuDidOpen() {
         refreshPermission()
         refreshLoginItem()
+        refreshDriverTone()
         refreshChoices()
     }
 
@@ -301,6 +330,13 @@ final class AppModel: ObservableObject {
 
     // MARK: For experts
 
+    /// The driver's test beep keeps playing after the app quits, so what the switch shows comes from
+    /// the driver, not from what this run did.
+    func refreshDriverTone() {
+        let state = services.driverToneState() ?? false
+        if state != driverToneOn { driverToneOn = state }
+    }
+
     func setDriverTone(_ on: Bool) {
         do {
             try services.setDriverTone(on)
@@ -308,7 +344,7 @@ final class AppModel: ObservableObject {
             selfTests["driverTestTone"] = on ? "on" : "off"
             message = nil
         } catch {
-            driverToneOn = false
+            // The beep is still in the state it was in, so the switch keeps showing that.
             selfTests["driverTestTone"] = "failed: \(error.localizedDescription)"
             log.error("The driver's test tone could not be changed: \(error.localizedDescription, privacy: .public)")
             message = "The test beep needs Duette to be installed. Run the Duette installer and try again."
@@ -352,19 +388,44 @@ final class AppModel: ObservableObject {
         export = .working
         let permissions = diagnosticsPermissions()
         let selfTests = self.selfTests
-        let collector = DiagnosticsCollector(audioSystem: services.audioSystem, controller: controller)
+        let collector = DiagnosticsCollector(audioSystem: services.audioSystem, controller: controller,
+                                             timing: services.deviceTiming, selfTestTone: services.driverToneState)
         let exporter = services.diagnosticsExporter
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result: ExportState
-            do {
+        services.runInBackground { [weak self] in
+            let built = Result { () throws -> URL in
                 let report = collector.collect(permissions: permissions, selfTests: selfTests)
-                let saved = try exporter.export(report: try DiagnosticsCollector.encode(report))
-                result = .saved(saved.url, onDesktop: saved.onDesktop)
-            } catch {
-                result = .failed
+                return try exporter.build(report: try DiagnosticsCollector.encode(report))
             }
             guard let self else { return }
-            self.services.runOnMain { self.export = result }
+            self.services.runOnMain { self.finishExport(built) }
+        }
+    }
+
+    /// The zip is made; ask where to put it, move it there and show it in Finder.
+    private func finishExport(_ built: Result<URL, Error>) {
+        let manager = FileManager.default
+        switch built {
+        case .failure(let error):
+            log.error("The diagnostics could not be collected: \(String(describing: error), privacy: .public)")
+            export = .failed("Duette couldn't put the details together. Please try again.")
+        case .success(let zip):
+            guard let destination = services.chooseDestination(zip.lastPathComponent) else {
+                // They changed their mind.
+                try? manager.removeItem(at: zip)
+                export = .idle
+                return
+            }
+            do {
+                // The save panel already asked about replacing a file that is there.
+                if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
+                try manager.moveItem(at: zip, to: destination)
+                export = .saved(destination)
+                services.reveal(destination)
+            } catch {
+                log.error("The diagnostics could not be saved: \(error.localizedDescription, privacy: .public)")
+                try? manager.removeItem(at: zip)
+                export = .failed("Duette couldn't save the file there. Please choose another place.")
+            }
         }
     }
 }

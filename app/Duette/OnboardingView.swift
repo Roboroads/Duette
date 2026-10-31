@@ -3,10 +3,14 @@ import SwiftUI
 
 /// The welcome guide: what Duette does, allow the microphone, allow the app's sound, and what to
 /// pick in OBS or Zoom. One title, a few plain sentences and one big button per screen.
+///
+/// Which screen shows lives in the model, so that closing the window can tell how far the user got.
 struct OnboardingView: View {
     @ObservedObject var model: AppModel
+    /// Closes the window.
     let onFinish: () -> Void
-    @State private var flow = OnboardingFlow()
+
+    private var flow: OnboardingFlow { model.guide }
 
     private var text: OnboardingText {
         OnboardingText.text(for: flow.step, appName: model.selectedAppName)
@@ -40,7 +44,7 @@ struct OnboardingView: View {
             buttonTitle: buttonTitle,
             canGoBack: flow.step != .welcome,
             onButton: primaryAction,
-            onBack: { flow.back() }
+            onBack: { model.guideBack() }
         ) {
             extra
         }
@@ -60,7 +64,7 @@ struct OnboardingView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                    Button("Continue without it") { flow.next() }
+                    Button("Continue without it") { model.guideNext() }
                         .controlSize(.large)
                 }
             }
@@ -71,7 +75,6 @@ struct OnboardingView: View {
             }
             .toggleStyle(.switch)
             .controlSize(.large)
-            .disabled(model.loginItem == .unavailable)
         default:
             EmptyView()
         }
@@ -80,17 +83,16 @@ struct OnboardingView: View {
     private func primaryAction() {
         switch flow.step {
         case .welcome:
-            flow.next()
+            model.guideNext()
         case .microphone:
             switch OnboardingFlow.microphoneButton(for: model.micPermission) {
             case .allow: model.perform(.allowMicrophone)
-            case .next: flow.next()
+            case .next: model.guideNext()
             case .openSettings: model.perform(.openMicrophoneSettings)
             }
         case .appSound:
-            // Starting the engine is what makes macOS ask about the app's sound.
-            model.startEngineForGuide()
-            flow.next()
+            // Leaving this screen starts the engine, which is what makes macOS ask about the app's sound.
+            model.guideNext()
         case .finish:
             onFinish()
         }
@@ -181,18 +183,73 @@ struct OnboardingPage<Extra: View>: View {
 /// Opens the guide in its own window. A menu bar app has no window of its own to put it in.
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    private weak var model: AppModel?
 
-    func show(model: AppModel, onFinish: @escaping () -> Void) {
+    func show(model: AppModel) {
         if let window {
             bringToFront(window)
             return
         }
-        let view = OnboardingView(model: model, onFinish: { [weak self] in
-            onFinish()
-            self?.window?.close()
-        })
+        self.model = model
+        model.resetGuide()
+        let view = OnboardingView(model: model, onFinish: { [weak self] in self?.window?.close() })
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
         window.title = "Welcome to Duette"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+        self.window = window
+        bringToFront(window)
+    }
+
+    /// However it closes (the Done button or the close button), the model decides whether setup
+    /// counts as done.
+    func windowWillClose(_ notification: Notification) {
+        window = nil
+        model?.guideWindowClosed()
+    }
+
+    private func bringToFront(_ window: NSWindow) {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// What opens when Duette is brought up again, or a second copy hands over, once setup is done: the
+/// same controls as the menu, for when the menu bar icon is hidden (behind the notch, or in a
+/// menu bar that is full).
+struct RunningWindowView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Duette is running in the menu bar")
+                    .font(.title3.bold())
+                Text("Look for the Duette icon at the top of your screen. If you can't see it, the menu bar may be full. You can use everything here too.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            MenuView(model: model)
+        }
+        .frame(width: 360)
+    }
+}
+
+final class RunningWindowController: NSObject, NSWindowDelegate {
+    private var window: NSWindow?
+
+    func show(model: AppModel) {
+        if let window {
+            bringToFront(window)
+            return
+        }
+        let window = NSWindow(contentViewController: NSHostingController(rootView: RunningWindowView(model: model)))
+        window.title = "Duette"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.delegate = self

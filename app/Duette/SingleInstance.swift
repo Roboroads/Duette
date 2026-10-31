@@ -8,6 +8,20 @@ struct RunningInstance: Equatable {
     var isTerminated: Bool
 }
 
+/// Which window to open when the user brings Duette up again (opens it a second time, or starts a
+/// second copy): the menu bar icon can be hidden behind the notch or in a full menu bar, so the
+/// app must be able to show itself.
+enum UserWindow: Equatable {
+    /// The welcome guide, while setup is not done.
+    case guide
+    /// A small window with the same controls as the menu.
+    case running
+
+    static func forReopen(onboardingDone: Bool) -> UserWindow {
+        onboardingDone ? .running : .guide
+    }
+}
+
 /// Only one Duette may run: two copies would each build an aggregate device and fight over the
 /// microphone. A second copy brings the first one to the front and quits.
 ///
@@ -16,6 +30,9 @@ struct SingleInstanceGuard {
     /// The process IDs of the other copies that should win over this one.
     var otherInstancePIDs: () -> [pid_t]
     var activate: (pid_t) -> Void
+
+    /// Sent to the copy that stays, so it shows a window.
+    static let showWindowNotification = Notification.Name("me.roboroads.duette.show-window")
 
     /// Activates the copy that is already running. Returns true if there is one, and the caller
     /// should quit.
@@ -54,6 +71,11 @@ struct SingleInstanceGuard {
             },
             activate: { pid in
                 NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+                // A menu bar app has no window to come forward, so ask it to open one.
+                DistributedNotificationCenter.default().postNotificationName(
+                    showWindowNotification, object: nil, userInfo: nil, deliverImmediately: true)
+                // Let the message leave before this copy quits.
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             })
     }
 }

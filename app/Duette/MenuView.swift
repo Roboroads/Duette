@@ -121,6 +121,13 @@ struct StatusHeader: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+
+                if let hint = line.hint {
+                    Text(hint)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -385,7 +392,6 @@ struct LaunchAtLoginRow: View {
             }
             .toggleStyle(.switch)
             .controlSize(.large)
-            .disabled(state == .unavailable)
             .accessibilityLabel("Open Duette when I log in")
 
             if state == .needsApproval {
@@ -496,10 +502,9 @@ struct FooterView: View {
                 Text("Collecting the details…")
             }
             .font(.subheadline)
-        case .saved(let url, let onDesktop):
+        case .saved(let url):
             VStack(alignment: .leading, spacing: 4) {
-                Text(onDesktop ? "Saved on your Desktop. Send that file to whoever is helping you."
-                               : "Saved. Send that file to whoever is helping you.")
+                Text("Saved. Send that file to whoever is helping you.")
                     .font(.subheadline)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Show in Finder") {
@@ -507,9 +512,10 @@ struct FooterView: View {
                 }
                 .controlSize(.large)
             }
-        case .failed:
-            Text("Duette couldn't save the file. Please try again.")
+        case .failed(let message):
+            Text(message)
                 .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -520,7 +526,8 @@ struct MenuView_Previews: PreviewProvider {
         VStack(alignment: .leading, spacing: 14) {
             StatusHeader(
                 line: StatusLine(tone: .problem, message: "Duette needs permission to hear Discord",
-                                 fix: .openSystemAudioSettings),
+                                 fix: .openSystemAudioSettings,
+                                 hint: "Scroll down to System Audio Recording Only and switch on Duette"),
                 onFix: { _ in })
             WarningBanner(text: "Discord is using Duette as its input: callers will hear themselves",
                           hint: "In Discord, choose your real microphone instead of “Duette”.")

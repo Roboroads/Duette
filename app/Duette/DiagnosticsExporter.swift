@@ -2,12 +2,19 @@ import DuetteAudio
 import Foundation
 import OSLog
 
-/// Runs a command line program and returns what it printed.
+/// What a command line program printed, and how it ended.
+struct CommandResult: Equatable {
+    /// stdout and stderr together.
+    var output: String
+    /// The exit status; -1 if the program could not be started.
+    var status: Int32
+}
+
+/// Runs a command line program.
 enum CommandRunner {
-    /// stdout and stderr together. A program that cannot be started, or runs longer than `timeout`
-    /// seconds, gives a line that says so instead of throwing: a diagnostics export should collect
-    /// whatever it can.
-    static func run(_ path: String, _ arguments: [String], timeout: TimeInterval = 60) -> String {
+    /// A program that cannot be started, or runs longer than `timeout` seconds, gives a result that
+    /// says so instead of throwing: a diagnostics export should collect whatever it can.
+    static func execute(_ path: String, _ arguments: [String], timeout: TimeInterval = 60) -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -17,7 +24,7 @@ enum CommandRunner {
         do {
             try process.run()
         } catch {
-            return "could not run \(path): \(error.localizedDescription)"
+            return CommandResult(output: "could not run \(path): \(error.localizedDescription)", status: -1)
         }
         let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
@@ -25,34 +32,42 @@ enum CommandRunner {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         watchdog.cancel()
-        return String(decoding: data, as: UTF8.self)
+        return CommandResult(output: String(decoding: data, as: UTF8.self), status: process.terminationStatus)
+    }
+
+    /// Just the output.
+    static func run(_ path: String, _ arguments: [String], timeout: TimeInterval = 60) -> String {
+        execute(path, arguments, timeout: timeout).output
     }
 }
 
-/// Writes "Export Diagnostics..." as one zip: diagnostics.json from the DuetteKit collector, the
-/// app's own log, the system log of Duette's subsystems, and the code signature checks of the app
-/// and the driver (plan section 3.7).
-struct DiagnosticsExporter {
-    struct Saved: Equatable {
-        var url: URL
-        var onDesktop: Bool
-    }
+enum ExportError: Error, Equatable {
+    /// The files could not be written to the scratch folder.
+    case couldNotWrite
+    /// The zip program failed, or left no zip behind.
+    case couldNotZip
+}
 
-    /// Where the zip goes first.
-    var desktop: URL
-    /// Where it goes if the Desktop cannot be written (macOS asks before an app may write there).
-    var fallback: URL
+/// Collects "Export Diagnostics..." into one zip: diagnostics.json from the DuetteKit collector,
+/// the app's own log, the system log of Duette's subsystems, and the code signature checks of the
+/// app and the driver (plan section 3.7).
+///
+/// The zip is built in a scratch folder. Where it ends up is the user's choice, made in a save
+/// panel (a save panel needs no permission to write to the Desktop; writing there directly makes
+/// macOS ask about the Desktop folder without saying why).
+struct DiagnosticsExporter {
+    /// Where the zip is built.
+    var scratch: URL
     var appPath: String
     var driverPath: String
     var appLog: () -> String
     var runCommand: (_ path: String, _ arguments: [String]) -> String
+    /// Zips `folder` (keeping the folder itself in the zip) to `zip`; false if it did not work.
+    var makeZip: (_ folder: URL, _ zip: URL) -> Bool = DiagnosticsExporter.zipWithDitto
 
     static func live() -> DiagnosticsExporter {
-        let manager = FileManager.default
-        return DiagnosticsExporter(
-            desktop: manager.urls(for: .desktopDirectory, in: .userDomainMask).first
-                ?? manager.homeDirectoryForCurrentUser.appendingPathComponent("Desktop"),
-            fallback: manager.temporaryDirectory.appendingPathComponent("Duette-Diagnostics"),
+        DiagnosticsExporter(
+            scratch: FileManager.default.temporaryDirectory.appendingPathComponent("Duette-Diagnostics"),
             appPath: Bundle.main.bundlePath,
             driverPath: DuetteDriver.bundlePath,
             appLog: Self.readAppLog,
@@ -68,33 +83,40 @@ struct DiagnosticsExporter {
         return "Duette-Diagnostics-" + formatter.string(from: date)
     }
 
-    /// Writes the zip. `report` is the encoded diagnostics.json.
-    func export(report: Data, now: Date = Date(), timeZone: TimeZone = .current) throws -> Saved {
+    static func zipWithDitto(_ folder: URL, _ zip: URL) -> Bool {
+        CommandRunner.execute("/usr/bin/ditto", ["-c", "-k", "--keepParent", folder.path, zip.path]).status == 0
+    }
+
+    /// Builds the zip in the scratch folder and returns it. `report` is the encoded diagnostics.json.
+    func build(report: Data, now: Date = Date(), timeZone: TimeZone = .current) throws -> URL {
         let manager = FileManager.default
         let name = Self.baseName(for: now, timeZone: timeZone)
 
-        let staging = manager.temporaryDirectory.appendingPathComponent("duette-export-\(UUID().uuidString)")
+        let staging = scratch.appendingPathComponent("duette-export-\(UUID().uuidString)")
         let folder = staging.appendingPathComponent(name)
-        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        do {
+            try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            throw ExportError.couldNotWrite
+        }
         defer { try? manager.removeItem(at: staging) }
 
-        try report.write(to: folder.appendingPathComponent("diagnostics.json"))
-        try appLog().write(to: folder.appendingPathComponent("app.log"), atomically: true, encoding: .utf8)
-        try systemLog().write(to: folder.appendingPathComponent("system.log"), atomically: true, encoding: .utf8)
-        try signatures().write(to: folder.appendingPathComponent("signatures.txt"), atomically: true, encoding: .utf8)
-
-        for (directory, onDesktop) in [(desktop, true), (fallback, false)] {
-            let zip = directory.appendingPathComponent(name + ".zip")
-            do {
-                try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-                try? manager.removeItem(at: zip)
-                _ = runCommand("/usr/bin/ditto", ["-c", "-k", "--keepParent", folder.path, zip.path])
-                if manager.fileExists(atPath: zip.path) { return Saved(url: zip, onDesktop: onDesktop) }
-            } catch {
-                continue
-            }
+        do {
+            try report.write(to: folder.appendingPathComponent("diagnostics.json"))
+            try appLog().write(to: folder.appendingPathComponent("app.log"), atomically: true, encoding: .utf8)
+            try systemLog().write(to: folder.appendingPathComponent("system.log"), atomically: true, encoding: .utf8)
+            try signatures().write(to: folder.appendingPathComponent("signatures.txt"), atomically: true, encoding: .utf8)
+        } catch {
+            throw ExportError.couldNotWrite
         }
-        throw CocoaError(.fileWriteUnknown)
+
+        let zip = scratch.appendingPathComponent(name + ".zip")
+        try? manager.removeItem(at: zip)
+        guard makeZip(folder, zip), manager.fileExists(atPath: zip.path) else {
+            try? manager.removeItem(at: zip)
+            throw ExportError.couldNotZip
+        }
+        return zip
     }
 
     // MARK: Pieces
