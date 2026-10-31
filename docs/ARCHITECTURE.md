@@ -149,7 +149,7 @@ A build does, in order: look up the sink and the microphone, find the app's proc
 - wake from sleep. On sleep it stops and goes to `idle`;
 - the user changes the app, the microphone or the buffer size (64, 128, 256 or 512 frames).
 
-**Monitoring**, every 0.5 s: record the meters, look again for a feedback loop, and decide whether capture looks denied. Capture looks denied when the tap has delivered only exact zeros since it was built, for more than 3 seconds, while one of the app's processes is running output. Once the tap has delivered any sound, later silence counts as a quiet app. A `kAudioDeviceProcessorOverload` listener on the aggregate counts missed deadlines into the engine stats.
+**Monitoring**, every 0.5 s: record the meters, look again for a feedback loop, and decide whether capture looks denied. Capture looks denied when the tap has delivered only exact zeros since it was built, for more than 3 seconds, while one of the app's processes is running output. Once the tap has delivered any sound, later silence counts as a quiet app (a call where nobody talks is exact zeros too), unless macOS itself says the permission is gone: while that silence lasts and the app is running output, the controller asks `systemAudioCaptureAuthorization()` every 2 s, and only an answer of "denied" raises the hint. "Allowed" and "no answer" never do. The real system answers through the preflight call of the private TCC framework, looked up at run time, so a Mac without it falls back to "no answer". A `kAudioDeviceProcessorOverload` listener on the aggregate counts missed deadlines into the engine stats.
 
 ## The app on top
 
