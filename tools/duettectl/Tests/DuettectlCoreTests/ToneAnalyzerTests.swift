@@ -109,6 +109,8 @@ final class ToneAnalyzerTests: XCTestCase {
         XCTAssertEqual(stats.peak, 0.75)
         XCTAssertEqual(stats.zeros, 5)
         XCTAssertEqual(stats.longestZeroRun, 3)
+        XCTAssertEqual(stats.longestZeroRunStart, 4)
+        XCTAssertEqual(SignalStats([1, 2]).longestZeroRunStart, 0)
         XCTAssertEqual(stats.count, 8)
         XCTAssertEqual(stats.rms, ((0.25 + 0.5625 + 0.0625) / 8).squareRoot(), accuracy: 1e-9)
         XCTAssertEqual(SignalStats([]).rms, 0)

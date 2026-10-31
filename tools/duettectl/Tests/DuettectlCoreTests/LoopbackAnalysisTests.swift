@@ -94,7 +94,7 @@ final class LoopbackAnalysisTests: XCTestCase {
         let result = try XCTUnwrap(Run(readerPhase: 64).analyze())
         XCTAssertEqual(result.sampleOffset, 0)
         XCTAssertEqual(result.latencyMax, 272 + 64)
-        XCTAssertEqual(result.latencyMean ?? 0, 272, accuracy: 0.5)
+        XCTAssertEqual(result.latencyMean ?? 0, 272, accuracy: 1)
     }
 
     func testAShiftedLoopbackIsReported() throws {

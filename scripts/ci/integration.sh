@@ -5,12 +5,10 @@
 #
 # Usage: scripts/ci/integration.sh <phase> [args]
 #   setup         build what is missing, grant TCC, install build/test-out/Duette.driver
-#   blocking      the checks that must pass on the runner
-#   hands-on      the checks the runner cannot do; their failures are reported as
-#                 "needs hands-on" and do not fail the job
+#   blocking      every check; each must pass on the runner
 #   soak [MIN]    the long engine run (default 10 minutes)
 #   summary       the table, to stdout and $GITHUB_STEP_SUMMARY; uninstalls the driver
-#   all           setup, blocking, hands-on, summary
+#   all           setup, blocking, summary
 #
 # Results go to build/integration/: results.tsv (every check, from duettectl --report),
 # commands.tsv (one line per command) and one log per command.
@@ -183,14 +181,22 @@ require_setup() {
 phase_blocking() {
   require_setup
   local failed=0
+  # M1: the driver alone, then the hidden sink as the engine's main device.
   run_cmd blocking selftest 60 "tone.left.440hz off.silence" -- selftest || failed=1
-  run_cmd blocking loopback-128 60 "latency sample-offset silence-after-stop" -- --buffer 128 loopback || failed=1
-  run_cmd blocking loopback-64 60 "latency sample-offset silence-after-stop" -- --buffer 64 loopback || failed=1
-  run_cmd blocking hidden-agg 60 "main-subdevice engine-tone.440hz ioproc-runs" -- hidden-agg || failed=1
+  run_cmd blocking loopback-128 60 "latency latency.worst sample-offset silence-after-stop" -- --buffer 128 loopback || failed=1
+  run_cmd blocking loopback-64 60 "latency latency.worst sample-offset silence-after-stop" -- --buffer 64 loopback || failed=1
+  run_cmd blocking hidden-agg 60 "main-subdevice clock-device ioproc-runs engine-tone.440hz" -- hidden-agg || failed=1
+  # M2 and M4 on the mic path.
   run_cmd blocking engine 60 "duette.1000hz overloads" -- engine --mic test-mic --seconds 3 --expect '1000@-12' || failed=1
-  run_cmd blocking verify-mic 90 "mic.1000hz mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz" -- verify-mic || failed=1
+  run_cmd blocking verify-mic 90 "mic.1000hz mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz overloads" -- verify-mic || failed=1
+  # M3 and M4: a process tap mixed with the mic, at 48 kHz and at 44.1 kHz.
+  run_cmd blocking verify-mix 90 "mix.440hz mix.1000hz app-gain-0.5.440hz mic-muted.1000hz overloads" -- verify-mix || failed=1
+  run_cmd blocking rate-mismatch 90 "tap mix.440hz mix.1000hz residual" -- rate-mismatch || failed=1
+  # 'dcli' and the feedback-loop warning, with readers that go through an aggregate or VPIO.
   run_cmd blocking dcli-aggregate 60 "aggregate.lists-pid aggregate.clears" -- dcli --mode aggregate || failed=1
-  run_cmd blocking feedback-loop 90 "dcli.lists-app detector.fires detector.ignores-own-process" -- feedback-loop || failed=1
+  run_cmd blocking dcli-vpio 60 "vpio.lists-pid vpio.clears" -- dcli --mode vpio || failed=1
+  run_cmd blocking feedback-loop 120 "dcli.lists-app detector.fires detector.ignores-own-process controller.warns controller.clears" \
+    -- feedback-loop --controller || failed=1
 
   # DuetteKit's HAL tests, now with the driver installed: testHiddenSinkAsMainSubdeviceRunsTheEngine
   # runs here instead of being skipped.
@@ -207,16 +213,6 @@ phase_blocking() {
     failed=1
   fi
   [ "$rc" -eq 0 ] || failed=1
-  return "$failed"
-}
-
-phase_hands_on() {
-  require_setup
-  # Process taps on the runner (S3: tap and aggregate are created, then the IOProc never starts).
-  run_cmd hands-on verify-mix 90 "mix.440hz mix.1000hz tap.audio app-gain-0.5.440hz" -- verify-mix || true
-  run_cmd hands-on rate-mismatch 90 "mix.440hz mix.1000hz residual" -- rate-mismatch || true
-  run_cmd hands-on feedback-controller 120 "controller.warns" -- feedback-loop --controller || true
-  run_cmd hands-on dcli-vpio 60 "vpio.lists-pid" -- dcli --mode vpio || true
 
   # TCC denial: what an app sees when System Audio Recording is off. Last, and put back after.
   echo "::group::TCC: deny System Audio Recording"
@@ -224,13 +220,13 @@ phase_hands_on() {
   restart_coreaudiod
   "$cli" list >/dev/null 2>&1 || true
   echo "::endgroup::"
-  run_cmd hands-on tcc-denied 90 "denied.440hz denied.hint" -- verify-mix --expect-denied || true
+  run_cmd blocking tcc-denied 90 "state denied.440hz denied.1000hz denied.hint" -- verify-mix --expect-denied || failed=1
   echo "::group::TCC: allow System Audio Recording again"
   tcc_set 2 kTCCServiceAudioCapture
   restart_coreaudiod
   "$cli" list >/dev/null 2>&1 || true
   echo "::endgroup::"
-  return 0
+  return "$failed"
 }
 
 phase_soak() {
@@ -252,12 +248,10 @@ phase_summary() {
     echo "| Command | Result | Measured |"
     echo "|---|---|---|"
     if [ -f "$commands" ]; then
-      while IFS=$'\t' read -r group id rc seconds headline; do
+      while IFS=$'\t' read -r _ id rc seconds headline; do
         local status measured=""
         if [ "$rc" = 0 ]; then
           status=PASS
-        elif [ "$group" = hands-on ]; then
-          status="needs hands-on"
         else
           status=FAIL
         fi
@@ -292,6 +286,10 @@ phase_summary() {
     cat "$table" >>"$GITHUB_STEP_SUMMARY"
   fi
 
+  echo "::group::coreaudiod: overloads and glitches"
+  /usr/bin/log show --last 30m --predicate 'process == "coreaudiod" AND (eventMessage CONTAINS[c] "overload" OR eventMessage CONTAINS[c] "glitch")' \
+    2>/dev/null | tail -n 60 || true
+  echo "::endgroup::"
   echo "::group::driver log"
   /usr/bin/log show --last 30m --info --predicate 'subsystem == "me.roboroads.duette.driver"' 2>/dev/null | tail -n 150 || true
   echo "::endgroup::"
@@ -305,14 +303,12 @@ shift || true
 case "$phase" in
   setup) phase_setup ;;
   blocking) phase_blocking ;;
-  hands-on) phase_hands_on ;;
   soak) phase_soak "$@" ;;
   summary) phase_summary ;;
   all)
     rc=0
     phase_setup
     phase_blocking || rc=1
-    phase_hands_on
     phase_summary
     exit "$rc"
     ;;

@@ -318,21 +318,25 @@ public struct SignalStats: Equatable {
     public var rms: Double
     /// Frames that are exactly 0.
     public var zeros: Int
-    /// The longest run of exact zeros.
+    /// The longest run of exact zeros, and the index where it starts (0 if there is none).
     public var longestZeroRun: Int
+    public var longestZeroRunStart: Int
     public var count: Int
 
     public init(_ samples: [Float]) {
         var peak: Float = 0
         var sum = 0.0
-        var zeros = 0, run = 0, longest = 0
-        for x in samples {
+        var zeros = 0, run = 0, longest = 0, longestStart = 0
+        for (i, x) in samples.enumerated() {
             peak = max(peak, abs(x))
             sum += Double(x) * Double(x)
             if x == 0 {
                 zeros += 1
                 run += 1
-                longest = max(longest, run)
+                if run > longest {
+                    longest = run
+                    longestStart = i + 1 - run
+                }
             } else {
                 run = 0
             }
@@ -341,6 +345,7 @@ public struct SignalStats: Equatable {
         self.rms = samples.isEmpty ? 0 : (sum / Double(samples.count)).squareRoot()
         self.zeros = zeros
         self.longestZeroRun = longest
+        self.longestZeroRunStart = longestStart
         self.count = samples.count
     }
 

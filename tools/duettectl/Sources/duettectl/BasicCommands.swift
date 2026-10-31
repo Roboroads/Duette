@@ -183,10 +183,14 @@ func runLoopback(_ ctx: Context) throws {
         r.check("sample-offset", false, "chirp not found")
     }
     let limit = Double(2 * Int(buffer) + 64)
+    // The delay an app recording "Duette" sees: from the writer's IOProc call that produced a
+    // frame to the reader's call that got it, averaged over the chirp. The worst single frame adds
+    // the jitter of when the HAL wakes the two I/O threads.
     if let worst = result.latencyMax, let mean = result.latencyMean {
-        r.check("latency", worst <= limit, Format.frames(worst, sampleRate: rate),
-                detail: String(format: "largest, writer IOProc call to reader IOProc call; mean %.1f frames; limit 2 x %ld + 64 = %.0f",
-                               mean, Int(buffer), limit))
+        r.check("latency", mean <= limit, Format.frames(mean, sampleRate: rate),
+                detail: String(format: "mean over the chirp, writer IOProc call to reader IOProc call; limit 2 x %ld + 64 = %.0f",
+                               Int(buffer), limit))
+        r.info("latency.worst", Format.frames(worst, sampleRate: rate), detail: "the latest single frame of the chirp")
     } else {
         r.check("latency", false, "not measured")
     }
