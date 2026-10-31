@@ -93,6 +93,8 @@ final class FakeAudioSystem: AudioSystem {
     private(set) var startedIO: [AudioObjectID] = []
     private(set) var stoppedIO: [AudioObjectID] = []
     private(set) var loopbackCalls: [LoopbackCall] = []
+    /// Called while the test sound plays.
+    var onMeasure: (() -> Void)?
     private var nextID: AudioObjectID = 1000
 
     func emit(_ event: AudioSystemEvent) {
@@ -218,6 +220,7 @@ final class FakeAudioSystem: AudioSystem {
     func measureLoopback(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
                          sampleRate: Double) throws -> LoopbackMeasurement {
         loopbackCalls.append(LoopbackCall(sink: sink, duette: duette, bufferFrameSize: bufferFrameSize, ioRunning: ioRunning))
+        onMeasure?()
         return try loopback.get()
     }
 }

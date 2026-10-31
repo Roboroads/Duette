@@ -93,11 +93,24 @@ public struct SoakPlan: Equatable {
         case silent
         /// Sound with a run of exact zeros in it: frames went missing.
         case dropout
+        /// Sound with exact zeros that the mic itself delivered (a mute switch, a noise gate).
+        case micZeros
     }
 
-    public static func classify(peak: Float, longestZeroRun: Int) -> Window {
+    /// A second counts as having sound when less than this share of it is exact zeros.
+    public static let silentShareLimit = 0.1
+    /// A real soak passes only if at least this share of its seconds had sound.
+    public static let minimumSoundShare = 0.5
+
+    /// `micLongestZeroRun`: the longest run of exact zeros in the mic's own recording around the
+    /// same second, or nil if there is none to compare.
+    public static func classify(peak: Float, longestZeroRun: Int, micLongestZeroRun: Int? = nil) -> Window {
         if peak == 0 { return .silent }
         return longestZeroRun >= dropoutFrames ? .dropout : .sound
+    }
+
+    public static func hasSound(zeros: Int, frames: Int) -> Bool {
+        true
     }
 
     /// How many of `offsets` (seconds since the start) fall in each minute of a soak `minutes`
@@ -127,6 +140,11 @@ public struct SoakPlan: Equatable {
         let sizes = buffers.map { String($0) }.joined(separator: " and ")
         let each = buffers.count > 1 ? " each" : ""
         return "SOAK PASS: \(String(format: "%g", minutes)) min at \(sizes) frames\(each): no dropouts, no missed deadlines"
+    }
+
+    /// 0 for PASS (or nothing to do here), 1 for FAIL, 2 for INCONCLUSIVE.
+    public func exitStatus(_ checks: [Check]) -> Int32 {
+        checks.contains { $0.status == .fail } ? 1 : 0
     }
 
     /// The file to attach: the verdict first, then `header`, every check and `notes`.

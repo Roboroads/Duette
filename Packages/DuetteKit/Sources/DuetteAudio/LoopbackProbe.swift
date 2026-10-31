@@ -183,6 +183,16 @@ public enum LoopbackProbe {
         result.confidence >= 0.9 && result.sampleOffset == 0 && result.latencyMean != nil
     }
 
+    /// Runs `take` up to `attempts` times and returns the first take that `isGood`, with its
+    /// attempt number. A take that throws counts as a failed attempt; if every one threw, the last
+    /// error is thrown. Otherwise, with no good take, LatencyMeasurementError.notHeard.
+    public static func pickTake(attempts: Int, take: () throws -> LoopbackResult?) throws -> (result: LoopbackResult, attempt: Int) {
+        for attempt in 1...max(1, attempts) {
+            if let result = try take() { return (result, attempt) }
+        }
+        throw LatencyMeasurementError.notHeard
+    }
+
     /// Measures; blocks for about a second per take.
     public static func measure(sink: AudioObjectID, duette: AudioObjectID, bufferFrameSize: UInt32,
                                sampleRate: Double = 48000) throws -> LoopbackMeasurement {

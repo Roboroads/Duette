@@ -88,6 +88,27 @@ final class SoakPlanTests: XCTestCase {
         XCTAssertEqual(SoakPlan.classify(peak: 0, longestZeroRun: 48000), .silent, "nothing came in at all: not a gap")
     }
 
+    func testZerosThatWereAlreadyInTheMicAreNotDropouts() {
+        // A headset's mute switch, a noise gate or a quiet 16-bit mic gives exact zeros itself.
+        XCTAssertEqual(SoakPlan.classify(peak: 0.2, longestZeroRun: 200, micLongestZeroRun: 300), .micZeros)
+        XCTAssertEqual(SoakPlan.classify(peak: 0.2, longestZeroRun: 200, micLongestZeroRun: 100), .micZeros)
+        XCTAssertEqual(SoakPlan.classify(peak: 0.2, longestZeroRun: 40, micLongestZeroRun: 32), .micZeros)
+        // The mic had sound where "Duette" had a gap: frames went missing on the way.
+        XCTAssertEqual(SoakPlan.classify(peak: 0.2, longestZeroRun: 200, micLongestZeroRun: 99), .dropout)
+        XCTAssertEqual(SoakPlan.classify(peak: 0.2, longestZeroRun: 200, micLongestZeroRun: 0), .dropout)
+        XCTAssertEqual(SoakPlan.classify(peak: 0.2, longestZeroRun: 200, micLongestZeroRun: nil), .dropout,
+                       "the mic's own recording was not there to compare: a gap counts")
+        XCTAssertEqual(SoakPlan.classify(peak: 0.2, longestZeroRun: 10, micLongestZeroRun: 500), .sound)
+    }
+
+    func testASecondHasSoundWhenNearlyAllOfItIsNotExactZero() {
+        XCTAssertTrue(SoakPlan.hasSound(zeros: 0, frames: 48000))
+        XCTAssertTrue(SoakPlan.hasSound(zeros: 4799, frames: 48000))
+        XCTAssertFalse(SoakPlan.hasSound(zeros: 4800, frames: 48000))
+        XCTAssertFalse(SoakPlan.hasSound(zeros: 0, frames: 0))
+        XCTAssertEqual(SoakPlan.minimumSoundShare, 0.5)
+    }
+
     func testOverloadsAreCountedPerMinute() {
         XCTAssertEqual(SoakPlan.perMinute([1, 59.9, 60, 61, 179, 400], minutes: 3), [2, 2, 1])
         XCTAssertEqual(SoakPlan.perMinute([], minutes: 2.5), [0, 0, 0])
@@ -119,6 +140,26 @@ final class SoakPlanTests: XCTestCase {
         let skipped = [Check(command: "soak", name: "test-devices", status: .skip, value: "not found")]
         XCTAssertEqual(try plan().verdict(skipped), "SOAK SKIPPED: test-devices: not found")
         XCTAssertEqual(try plan().verdict([]), "SOAK FAIL: nothing was checked")
+    }
+
+    func testTooLittleSoundIsInconclusiveNotAPass() throws {
+        let soak = try plan(flags: ["hands-on"])
+        let quiet = [Check(command: "soak", name: "128.windows", status: .pass, value: "0 of 600 failed"),
+                     Check(command: "soak", name: "128.sound", status: .skip, value: "120 of 600 seconds had sound")]
+        let line = "SOAK INCONCLUSIVE: 128.sound: 120 of 600 seconds had sound. "
+            + "Keep sound going near the microphone (play music or keep talking) and run it again."
+        XCTAssertEqual(soak.verdict(quiet), line)
+        XCTAssertEqual(soak.exitStatus(quiet), 2)
+        let silent = [Check(command: "soak", name: "64.signal", status: .skip, value: "only silence for 15 s")]
+        XCTAssertTrue(soak.verdict(silent).hasPrefix("SOAK INCONCLUSIVE: 64.signal: only silence for 15 s. "))
+        XCTAssertEqual(soak.exitStatus(silent), 2)
+        // A gap that was found still fails, whatever else was too quiet.
+        let failed = quiet + [Check(command: "soak", name: "64.windows", status: .fail, value: "1 of 600 failed")]
+        XCTAssertEqual(soak.verdict(failed), "SOAK FAIL: 64.windows: 1 of 600 failed")
+        XCTAssertEqual(soak.exitStatus(failed), 1)
+        let pass = [Check(command: "soak", name: "128.sound", status: .pass, value: "600 of 600 seconds had sound")]
+        XCTAssertEqual(soak.exitStatus(pass), 0)
+        XCTAssertEqual(try plan().exitStatus([Check(command: "soak", name: "test-devices", status: .skip, value: "not found")]), 0)
     }
 
     func testTheResultFileHasTheVerdictTheHeaderAndEveryCheck() throws {

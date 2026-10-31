@@ -75,14 +75,21 @@ public struct DeviceTiming: Codable, Equatable {
     public var outputLatency: UInt32?
     public var inputSafetyOffset: UInt32?
     public var outputSafetyOffset: UInt32?
+    /// kAudioStreamPropertyLatency of the device's first stream in each scope: latency on top of
+    /// the device's own.
+    public var inputStreamLatency: UInt32?
+    public var outputStreamLatency: UInt32?
 
     public init(bufferFrameSize: UInt32? = nil, inputLatency: UInt32? = nil, outputLatency: UInt32? = nil,
-                inputSafetyOffset: UInt32? = nil, outputSafetyOffset: UInt32? = nil) {
+                inputSafetyOffset: UInt32? = nil, outputSafetyOffset: UInt32? = nil,
+                inputStreamLatency: UInt32? = nil, outputStreamLatency: UInt32? = nil) {
         self.bufferFrameSize = bufferFrameSize
         self.inputLatency = inputLatency
         self.outputLatency = outputLatency
         self.inputSafetyOffset = inputSafetyOffset
         self.outputSafetyOffset = outputSafetyOffset
+        self.inputStreamLatency = inputStreamLatency
+        self.outputStreamLatency = outputStreamLatency
     }
 
     /// Reads the device's buffer size, latencies and safety offsets from the HAL.
@@ -91,12 +98,19 @@ public struct DeviceTiming: Codable, Equatable {
         func value(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope) -> UInt32? {
             try? object.get(selector, scope: scope, as: UInt32.self)
         }
+        func streamLatency(_ scope: AudioObjectPropertyScope) -> UInt32? {
+            guard let stream = (try? object.getArray(kAudioDevicePropertyStreams, scope: scope, of: AudioObjectID.self))?.first
+            else { return nil }
+            return try? AudioObject(stream).get(kAudioStreamPropertyLatency, as: UInt32.self)
+        }
         return DeviceTiming(
             bufferFrameSize: value(kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal),
             inputLatency: value(kAudioDevicePropertyLatency, kAudioObjectPropertyScopeInput),
             outputLatency: value(kAudioDevicePropertyLatency, kAudioObjectPropertyScopeOutput),
             inputSafetyOffset: value(kAudioDevicePropertySafetyOffset, kAudioObjectPropertyScopeInput),
-            outputSafetyOffset: value(kAudioDevicePropertySafetyOffset, kAudioObjectPropertyScopeOutput))
+            outputSafetyOffset: value(kAudioDevicePropertySafetyOffset, kAudioObjectPropertyScopeOutput),
+            inputStreamLatency: streamLatency(kAudioObjectPropertyScopeInput),
+            outputStreamLatency: streamLatency(kAudioObjectPropertyScopeOutput))
     }
 }
 
@@ -228,6 +242,14 @@ public final class DiagnosticsCollector {
             devices: audioSystem.devices().map { DiagnosticsReport.Device(info: $0, timing: timing($0.id)) },
             driver: driver, selectedApp: selectedApp, selectedAppProcesses: appProcesses,
             engine: engineReport, selfTests: selfTests)
+    }
+
+    /// The report with `measuredLatencyMilliseconds` in its engine section, as before
+    /// EngineController kept the latest "Measure latency" itself.
+    @available(*, deprecated, message: "collect(permissions:selfTests:now:) takes the latest measurement from the controller")
+    public func collect(permissions: [String: String] = [:], selfTests: [String: String] = [:],
+                        measuredLatencyMilliseconds: Double?, now: Date = Date()) -> DiagnosticsReport {
+        collect(permissions: permissions, selfTests: selfTests, now: now)
     }
 
     /// diagnostics.json: pretty-printed, keys sorted, ISO 8601 dates.

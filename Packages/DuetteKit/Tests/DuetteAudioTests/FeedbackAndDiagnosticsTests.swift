@@ -203,6 +203,19 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertEqual(decoded.engine?.status, engine.status)
     }
 
+    @available(*, deprecated)
+    func testTheOldCollectStillTakesAMeasuredLatency() throws {
+        let system = FakeAudioSystem()
+        system.addDevice(id: 12, uid: DuetteDriver.deviceUID, name: "Duette", inputChannels: 2)
+        let scheduler = ManualScheduler()
+        let controller = EngineController(audioSystem: system, scheduler: scheduler, ownPID: 4242)
+        controller.start(EngineConfiguration())
+        let collector = DiagnosticsCollector(audioSystem: system, controller: controller,
+                                             timing: { _ in DeviceTiming(bufferFrameSize: 128) }, selfTestTone: { false })
+        let report = collector.collect(permissions: [:], selfTests: [:], measuredLatencyMilliseconds: 9.5)
+        XCTAssertEqual(try XCTUnwrap(report.engine).measuredLatencyMilliseconds, 9.5)
+    }
+
     func testReportWithoutDriverOrController() {
         let system = FakeAudioSystem()
         system.sinkPresent = false

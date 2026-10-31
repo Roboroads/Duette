@@ -602,10 +602,11 @@ final class AppModelTests: XCTestCase {
 
         guard case .done(let measurement) = model.latencyCheck else { return XCTFail("\(model.latencyCheck)") }
         // The fake HAL gives every device a 128-frame buffer and nothing else: 128 into the engine,
-        // then the 275 frames measured through the sink.
+        // then the 275 frames measured through the sink. Duette's own part is those 275 (5.7 ms).
         XCTAssertEqual(measurement.totalFrames, 128 + 275)
-        XCTAssertEqual(model.latencyResult, "Duette adds about 8 ms of delay.")
-        XCTAssertEqual(model.latencyDetail, "The test sound took 5.7 ms through Duette (expected 5.3 ms).")
+        XCTAssertEqual(model.latencyResult, "Duette adds about 6 ms of delay.")
+        XCTAssertEqual(model.latencyTotal, "Your microphone to other apps: about 8 ms.")
+        XCTAssertEqual(model.latencyDetail, "Measured with a test sound: 5.7 ms (expected 5.3 ms).")
         XCTAssertEqual(world.audio.loopbackCalls.count, 1)
         XCTAssertEqual(world.audio.loopbackCalls.first?.ioRunning, 0, "the engine pauses while the test sound plays")
         XCTAssertEqual(world.audio.ioRunning, 1, "and runs again after")
@@ -618,6 +619,7 @@ final class AppModelTests: XCTestCase {
         model.measureLatency()
         XCTAssertEqual(model.latencyCheck, .failed("Duette isn't running yet, so there is nothing to measure."))
         XCTAssertEqual(model.latencyResult, "Duette isn't running yet, so there is nothing to measure.")
+        XCTAssertNil(model.latencyTotal)
         XCTAssertNil(model.latencyDetail)
         XCTAssertTrue(world.audio.loopbackCalls.isEmpty)
     }
@@ -649,6 +651,66 @@ final class AppModelTests: XCTestCase {
                                           timing: { _ in DeviceTiming(bufferFrameSize: 128) }, selfTestTone: { false })
             .collect(selfTests: model.selfTestResults)
         XCTAssertEqual(report.engine?.measuredLatency?.totalFrames, 128 + 275)
-        XCTAssertEqual(report.selfTests["latency"], "8.4 ms: loopback 5.73 ms measured, 5.33 ms estimated")
+        XCTAssertEqual(report.selfTests["latency"], "Duette adds 5.73 ms (5.33 ms estimated); microphone to other apps 8.40 ms")
+    }
+
+    func testTheDriversTestToneIsOffWhileMeasuringAndComesBackAfter() {
+        let world = self.world!
+        world.audio.loopback = .success(measured)
+        world.driverToneIsOn = true
+        var toneDuringMeasurement: Bool?
+        world.audio.onMeasure = { [unowned world] in toneDuringMeasurement = world.driverToneIsOn }
+        let model = world.makeModel()
+        model.start()
+        model.measureLatency()
+        XCTAssertEqual(toneDuringMeasurement, false, "the beep would be measured instead of the loopback")
+        XCTAssertEqual(world.driverToneIsOn, true)
+        XCTAssertEqual(world.driverToneCalls, [false, true])
+        XCTAssertTrue(model.driverToneOn)
+    }
+
+    func testWithTheToneOffTheDriverIsLeftAlone() {
+        world.audio.loopback = .success(measured)
+        let model = world.makeModel()
+        model.start()
+        model.measureLatency()
+        XCTAssertEqual(world.driverToneCalls, [])
+    }
+
+    func testMeasuringWhileDuetteRestartsSaysSo() {
+        world.audio.loopback = .success(measured)
+        let model = world.makeModel()
+        model.start()
+        model.setBufferFrameSize(256)
+        model.measureLatency()
+        XCTAssertEqual(model.latencyCheck, .failed("Duette is restarting. Try again in a moment."))
+    }
+
+    func testAnOldResultGoesWhenTheEngineChanges() {
+        world.audio.loopback = .success(measured)
+        let model = world.makeModel()
+        model.start()
+        model.measureLatency()
+        XCTAssertNotNil(model.latencyTotal)
+        model.selectMic(.device(uid: "USB-Mic"))
+        XCTAssertEqual(model.latencyCheck, .idle, "another mic")
+        world.settle()
+
+        model.measureLatency()
+        XCTAssertNotNil(model.latencyTotal)
+        model.perform(.tryAgain)
+        world.settle()
+        XCTAssertEqual(model.latencyCheck, .idle, "a rebuild")
+
+        world.audio.loopback = .failure(LatencyMeasurementError.notHeard)
+        model.measureLatency()
+        XCTAssertNotEqual(model.latencyCheck, .idle)
+        model.setBufferFrameSize(64)
+        XCTAssertEqual(model.latencyCheck, .idle, "a failure goes too")
+    }
+
+    func testTheNoteAboutWhatOthersHearIsPlain() {
+        XCTAssertEqual(AppModel.latencyNote,
+                       "While it measures, apps listening to Duette hear a short silence and a soft chirp or two.")
     }
 }

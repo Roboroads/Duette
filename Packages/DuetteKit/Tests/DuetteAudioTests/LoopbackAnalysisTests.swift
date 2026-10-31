@@ -155,4 +155,46 @@ final class LoopbackAnalysisTests: XCTestCase {
         XCTAssertFalse(LoopbackProbe.isGood(silent))
         XCTAssertNil(LoopbackMeasurement(result: silent, bufferFrameSize: 128, takes: 1))
     }
+
+    // MARK: Choosing among takes
+
+    private struct Unplugged: Error {}
+
+    func testTheFirstCleanTakeIsUsed() throws {
+        let good = try XCTUnwrap(Run().analyze())
+        var calls = 0
+        let chosen = try LoopbackProbe.pickTake(attempts: 3) { calls += 1; return good }
+        XCTAssertEqual(chosen.attempt, 1)
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testOnlyACleanTakeCounts() throws {
+        // Found with full confidence, but 5 frames off where it was written (the driver's test
+        // tone in place of the loopback, say): never a result.
+        let shifted = try XCTUnwrap(Run(offset: 5).analyze())
+        var calls = 0
+        XCTAssertThrowsError(try LoopbackProbe.pickTake(attempts: 3) { calls += 1; return shifted }) { error in
+            XCTAssertEqual(error as? LatencyMeasurementError, .notHeard)
+        }
+        XCTAssertEqual(calls, 3)
+        XCTAssertThrowsError(try LoopbackProbe.pickTake(attempts: 2) { nil }) { error in
+            XCTAssertEqual(error as? LatencyMeasurementError, .notHeard)
+        }
+    }
+
+    func testATakeThatThrowsIsAFailedAttempt() throws {
+        let good = try XCTUnwrap(Run().analyze())
+        var calls = 0
+        let chosen = try LoopbackProbe.pickTake(attempts: 3) {
+            calls += 1
+            if calls == 1 { throw Unplugged() }
+            return good
+        }
+        XCTAssertEqual(chosen.attempt, 2)
+        // Every take threw: that error, not "not heard".
+        XCTAssertThrowsError(try LoopbackProbe.pickTake(attempts: 2) { throw Unplugged() }) { error in
+            XCTAssertTrue(error is Unplugged)
+        }
+    }
 }
+

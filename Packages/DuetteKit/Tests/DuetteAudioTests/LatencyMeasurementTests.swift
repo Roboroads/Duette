@@ -18,6 +18,22 @@ final class LatencyMeasurementTests: XCTestCase {
         XCTAssertEqual(estimate.milliseconds, Double(estimate.frames) / 48, accuracy: 1e-9)
     }
 
+    func testTheMicsStreamLatencyCountsOnTheInputSide() {
+        let aggregate = DeviceTiming(bufferFrameSize: 128, inputLatency: 10, inputSafetyOffset: 8)
+        let mic = DeviceTiming(bufferFrameSize: 512, inputLatency: 99, inputSafetyOffset: 99, inputStreamLatency: 24)
+        let estimate = LatencyModel.estimate(aggregate: aggregate, duette: nil, mic: mic, sampleRate: 48000)
+        // The aggregate's own figures already cover the mic's device latency and safety offset;
+        // its stream latency is the mic's alone.
+        XCTAssertEqual(estimate.inputFrames, 128 + 10 + 8 + 24)
+    }
+
+    func testStreamLatenciesOnTheLoopbackCount() {
+        let aggregate = DeviceTiming(bufferFrameSize: 128, outputStreamLatency: 5)
+        let duette = DeviceTiming(inputSafetyOffset: 16, inputStreamLatency: 3)
+        let estimate = LatencyModel.estimate(aggregate: aggregate, duette: duette, sampleRate: 48000)
+        XCTAssertEqual(estimate.loopbackFrames, 128 + 5 + 128 + 16 + 3)
+    }
+
     func testWithoutTheDriverOnlyTheEnginesBuffersCount() {
         let estimate = LatencyModel.estimate(aggregate: DeviceTiming(bufferFrameSize: 64), duette: nil, sampleRate: 48000)
         XCTAssertEqual(estimate.inputFrames, 64)
@@ -59,6 +75,16 @@ final class LatencyMeasurementTests: XCTestCase {
         XCTAssertEqual(measurement.totalMilliseconds, 431.0 / 48, accuracy: 1e-9)
         XCTAssertEqual(measurement.differenceMilliseconds, 3.0 / 48, accuracy: 1e-9)
         XCTAssertTrue(measurement.matchesEstimate)
+    }
+
+    func testWhatDuetteAddsIsTheLoopbackAndTheTotalComesApart() {
+        let measurement = LatencyMeasurement(date: Date(timeIntervalSince1970: 0), loopback: loopback(275),
+                                             estimate: runnerEstimate, sampleRate: 48000)
+        // Duette's own part: from the engine to an app reading "Duette". The mic's way into the
+        // engine would be there without Duette too.
+        XCTAssertEqual(measurement.addedFrames, 275)
+        XCTAssertEqual(measurement.addedMilliseconds, 275.0 / 48, accuracy: 1e-9)
+        XCTAssertEqual(measurement.totalFrames, 156 + 275)
     }
 
     func testALoopbackMoreThanAMillisecondFromTheEstimateDoesNotMatch() {
@@ -149,6 +175,55 @@ final class LatencyMeasurementTests: XCTestCase {
         XCTAssertEqual(controller.latestLatencyMeasurement, measurement)
     }
 
+    func testTheProbeRunsAtTheRunningAggregatesBufferSize() throws {
+        // Asked for 128, but the HAL gave the aggregate 64 (as the timing says): measure what runs.
+        controller.start(EngineConfiguration(bufferFrameSize: 128))
+        _ = try XCTUnwrap(measure()).get()
+        XCTAssertEqual(system.loopbackCalls.map(\.bufferFrameSize), [64])
+    }
+
+    func testTheMicsStreamLatencyIsInTheMeasuredTotal() throws {
+        let micTiming: (AudioObjectID) -> DeviceTiming = { device in
+            switch device {
+            case 10: return DeviceTiming(bufferFrameSize: 512, inputStreamLatency: 24)
+            case 12: return DeviceTiming(bufferFrameSize: 512, inputSafetyOffset: 16)
+            default: return DeviceTiming(bufferFrameSize: 64)
+            }
+        }
+        controller.start(EngineConfiguration(bufferFrameSize: 64))
+        var result: Result<LatencyMeasurement, LatencyMeasurementError>?
+        controller.measureLatency(timing: micTiming) { result = $0 }
+        let measurement = try XCTUnwrap(result).get()
+        XCTAssertEqual(measurement.estimate.inputFrames, 64 + 24, "the built-in mic (10) has 24 frames of stream latency")
+    }
+
+    func testNothingIsMeasuredWhileARebuildIsPending() {
+        controller.start(EngineConfiguration())
+        controller.update(EngineConfiguration(bufferFrameSize: 256))
+        XCTAssertEqual(failure(measure()), .restarting, "the engine is about to be torn down")
+        XCTAssertTrue(system.loopbackCalls.isEmpty)
+        scheduler.advance(by: EngineController.debounceInterval + 0.01)
+        XCTAssertNotNil(try? measure()?.get(), "and once it runs again it measures")
+    }
+
+    func testTheLatestResultIsForgottenWhenTheEngineChanges() throws {
+        controller.start(EngineConfiguration())
+        _ = try XCTUnwrap(measure()).get()
+        XCTAssertNotNil(controller.latestLatencyMeasurement)
+        controller.update(EngineConfiguration(bufferFrameSize: 256))
+        XCTAssertNil(controller.latestLatencyMeasurement, "a configuration change")
+
+        scheduler.advance(by: EngineController.debounceInterval + 0.01)
+        _ = try XCTUnwrap(measure()).get()
+        controller.rebuild()
+        scheduler.advance(by: EngineController.debounceInterval + 0.01)
+        XCTAssertNil(controller.latestLatencyMeasurement, "a rebuild")
+
+        _ = try XCTUnwrap(measure()).get()
+        system.emit(.willSleep)
+        XCTAssertNil(controller.latestLatencyMeasurement, "sleep")
+    }
+
     func testNothingIsMeasuredWhileTheEngineIsNotRunning() {
         XCTAssertEqual(failure(measure()), .notRunning, "not started")
 
@@ -194,6 +269,7 @@ final class LatencyMeasurementTests: XCTestCase {
         XCTAssertEqual(controller.status.state, .error(status: OSStatus(kAudioHardwareUnspecifiedError), attempt: 1))
         XCTAssertEqual(system.destroyedAggregates, [first], "the broken aggregate is torn down")
         XCTAssertEqual(system.ioRunning, 0)
+        XCTAssertNil(controller.latestLatencyMeasurement, "a result from an engine that then failed is not kept")
 
         scheduler.advance(by: EngineController.retryDelays[0] + 0.01)
         XCTAssertEqual(controller.status.state, .running(.micOnly))

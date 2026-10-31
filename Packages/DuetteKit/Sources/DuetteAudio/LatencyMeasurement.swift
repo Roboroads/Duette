@@ -43,7 +43,8 @@ public enum LatencyModel {
     /// driver is missing). The reader's buffer is taken to be the engine's: "Duette"'s own
     /// buffer-size property is this process's setting and says nothing about other apps. The
     /// drift-compensation resampler is in no HAL property and is left out.
-    public static func estimate(aggregate: DeviceTiming, duette: DeviceTiming?, sampleRate: Double) -> LatencyEstimate {
+    public static func estimate(aggregate: DeviceTiming, duette: DeviceTiming?, mic: DeviceTiming? = nil,
+                                sampleRate: Double) -> LatencyEstimate {
         let buffer = aggregate.bufferFrameSize ?? 0
         let input = buffer + (aggregate.inputLatency ?? 0) + (aggregate.inputSafetyOffset ?? 0)
         var loopback = buffer + (aggregate.outputLatency ?? 0) + (aggregate.outputSafetyOffset ?? 0)
@@ -100,6 +101,9 @@ public struct LatencyMeasurement: Codable, Equatable {
     /// side plus the measured loopback.
     public var totalFrames: Double
     public var totalMilliseconds: Double
+    /// What Duette itself adds: the measured loopback, from the engine to an app reading "Duette".
+    public var addedFrames: Double
+    public var addedMilliseconds: Double
     /// Measured loopback minus the estimate's, in milliseconds.
     public var differenceMilliseconds: Double
     /// The measured loopback is within LatencyModel.toleranceMilliseconds of the estimate's.
@@ -113,6 +117,8 @@ public struct LatencyMeasurement: Codable, Equatable {
         let rate = LatencyModel.rate(sampleRate)
         totalFrames = Double(estimate.inputFrames) + loopback.meanFrames
         totalMilliseconds = totalFrames * 1000 / rate
+        addedFrames = 0
+        addedMilliseconds = 0
         differenceMilliseconds = (loopback.meanFrames - Double(estimate.loopbackFrames)) * 1000 / rate
         // In frames, so exactly one millisecond's worth still matches.
         let toleranceFrames = LatencyModel.toleranceMilliseconds * rate / 1000
@@ -124,6 +130,8 @@ public struct LatencyMeasurement: Codable, Equatable {
 public enum LatencyMeasurementError: Error, Equatable, Codable, CustomStringConvertible {
     /// The engine is not running (setup not done, waiting for the driver, an error, asleep).
     case notRunning
+    /// The engine is about to be built again (a change is waiting out its debounce).
+    case restarting
     /// "Duette" is not there.
     case driverMissing
     /// The chirp never came back: nothing recorded from "Duette", or only silence (microphone
@@ -136,6 +144,7 @@ public enum LatencyMeasurementError: Error, Equatable, Codable, CustomStringConv
     public var description: String {
         switch self {
         case .notRunning: return "the engine is not running"
+        case .restarting: return "the engine is about to restart"
         case .driverMissing: return "the Duette device is missing"
         case .notHeard: return "the test chirp did not come back from Duette"
         case .unsupported: return "this audio system cannot measure"

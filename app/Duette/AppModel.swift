@@ -420,7 +420,7 @@ final class AppModel: ObservableObject {
             return "Duette's driver isn't installed. Run the Duette installer and try again."
         case .notHeard:
             return "Duette couldn't hear its test sound. Check that Duette may use the microphone, then try again."
-        case .unsupported, .failed:
+        case .unsupported, .failed, .restarting:
             return "The measurement didn't work. Please try again."
         }
     }
@@ -436,6 +436,14 @@ final class AppModel: ObservableObject {
             return text
         }
     }
+
+    /// Under the result: from the mic to other apps, Duette's part included.
+    var latencyTotal: String? {
+        nil
+    }
+
+    /// What anyone listening to Duette hears while it measures.
+    static let latencyNote = "While it measures, apps listening to Duette hear a short silence and a soft chirp or two."
 
     /// The measured loopback next to what was expected.
     var latencyDetail: String? {
