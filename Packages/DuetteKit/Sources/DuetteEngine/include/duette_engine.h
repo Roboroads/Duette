@@ -83,6 +83,10 @@ typedef struct duette_stats {
   uint64_t layout_mismatches;
   /// Processor overloads reported through duette_engine_count_overload.
   uint64_t overloads;
+  /// The tap has delivered at least one non-zero sample since the last configure. A tap that
+  /// never has, while its app plays, points at a denied capture permission; one that has and
+  /// then goes quiet is just a quiet app.
+  bool tap_had_audio;
 } duette_stats;
 
 /// A run of buffers in an AudioBufferList: `count` buffers starting at index `first`. A range
@@ -149,7 +153,8 @@ OSStatus duette_engine_ioproc(AudioObjectID device, const AudioTimeStamp* now,
 OSStatus duette_engine_start(duette_engine* engine, AudioObjectID device,
                              AudioDeviceIOProcID _Nullable* _Nonnull proc_id);
 
-/// Stops the IOProc and destroys its ID. After it returns the engine may be configured again.
+/// Stops the IOProc and destroys its ID, and zeroes the meters. After it returns the engine may
+/// be configured again.
 OSStatus duette_engine_stop(duette_engine* engine, AudioObjectID device, AudioDeviceIOProcID proc_id);
 
 /// True between a successful duette_engine_start and the matching duette_engine_stop.

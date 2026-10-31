@@ -57,8 +57,12 @@ public struct AppEntry: Equatable, Hashable {
 /// an app when
 ///  1. its bundle ID is the app's bundle ID,
 ///  2. its bundle ID starts with the app's bundle ID and a dot (com.hnc.Discord.helper.Renderer
-///     belongs to com.hnc.Discord, com.hnc.DiscordX does not), or
-///  3. following its parent processes reaches one of the app's processes.
+///     belongs to com.hnc.Discord, com.hnc.DiscordX does not),
+///  3. following its parent processes reaches one of the app's processes, or
+///  4. the process macOS holds responsible for it is one of the app's processes. This is how
+///     WebKit's XPC helpers (com.apple.WebKit.GPU, com.apple.WebKit.WebContent), which launchd
+///     starts, belong to Safari or to the app that shows a web view.
+/// Duette's own process never belongs to an app: tapping it would feed the mix back into itself.
 public enum ProcessCatalog {
     /// How many parents rule 3 follows before giving up.
     public static let maxParentHops = 64
@@ -90,26 +94,39 @@ public enum ProcessCatalog {
     ///     not a Core Audio client, so it may be missing from `processes`, and its helpers are
     ///     only found through it.
     ///   - parentPID: the parent of a process (sysctl KERN_PROC_PID in the real system).
+    ///   - responsiblePID: the process responsible for a process (rule 4), nil if unknown.
+    ///   - excludingPID: a process that never belongs to the app; Duette passes its own PID.
     public static func processes(of app: String, in processes: [AudioProcessInfo], appPIDs: Set<pid_t>,
-                                 parentPID: (pid_t) -> pid_t?) -> [AudioProcessInfo] {
+                                 parentPID: (pid_t) -> pid_t?,
+                                 responsiblePID: (pid_t) -> pid_t? = { _ in nil },
+                                 excludingPID: pid_t? = nil) -> [AudioProcessInfo] {
         guard !app.isEmpty else { return [] }
         var roots = appPIDs
         for process in processes where process.bundleID == app { roots.insert(process.pid) }
+        if let excludingPID { roots.remove(excludingPID) }
         return processes.filter { process in
-            bundleID(process.bundleID, belongsTo: app)
-                || roots.contains(process.pid)
-                || descends(process.pid, from: roots, parentPID: parentPID)
+            if process.pid == excludingPID { return false }
+            if bundleID(process.bundleID, belongsTo: app) || roots.contains(process.pid) { return true }
+            if descends(process.pid, from: roots, parentPID: parentPID) { return true }
+            if let responsible = responsiblePID(process.pid), responsible != process.pid {
+                return roots.contains(responsible)
+            }
+            return false
         }
     }
 
     /// The app picker: every running app, those playing audio first, each group by name.
     public static func appEntries(runningApps: [RunningApp], processes: [AudioProcessInfo],
-                                  parentPID: (pid_t) -> pid_t?) -> [AppEntry] {
+                                  parentPID: (pid_t) -> pid_t?,
+                                  responsiblePID: (pid_t) -> pid_t? = { _ in nil },
+                                  excludingPID: pid_t? = nil) -> [AppEntry] {
         var seen: Set<String> = []
         var entries: [AppEntry] = []
-        for app in runningApps where !app.bundleID.isEmpty && seen.insert(app.bundleID).inserted {
+        for app in runningApps where !app.bundleID.isEmpty && app.pid != excludingPID
+            && seen.insert(app.bundleID).inserted {
             let pids = Set(runningApps.filter { $0.bundleID == app.bundleID }.map(\.pid))
-            let group = Self.processes(of: app.bundleID, in: processes, appPIDs: pids, parentPID: parentPID)
+            let group = Self.processes(of: app.bundleID, in: processes, appPIDs: pids, parentPID: parentPID,
+                                       responsiblePID: responsiblePID, excludingPID: excludingPID)
             entries.append(AppEntry(bundleID: app.bundleID, name: app.name, pid: app.pid,
                                     isPlayingAudio: group.contains { $0.isRunningOutput }))
         }
@@ -129,4 +146,26 @@ public enum ProcessCatalog {
         let parent = info.kp_eproc.e_ppid
         return parent > 0 ? parent : nil
     }
+
+    /// Whether this system offers responsibility_get_pid_responsible_for_pid (rule 4). It is not
+    /// public API, so it is looked up at run time; without it rule 4 is skipped.
+    public static var canLookUpResponsiblePIDs: Bool { responsiblePIDFunction != nil }
+
+    /// The process macOS holds responsible for `pid` (the one TCC asks about), or nil if it is
+    /// unknown or the process is responsible for itself.
+    public static func systemResponsiblePID(of pid: pid_t) -> pid_t? {
+        guard let lookUp = responsiblePIDFunction else { return nil }
+        let responsible = lookUp(pid)
+        return responsible > 0 && responsible != pid ? responsible : nil
+    }
 }
+
+private typealias ResponsiblePIDFunction = @convention(c) (pid_t) -> pid_t
+
+private let responsiblePIDFunction: ResponsiblePIDFunction? = {
+    // RTLD_DEFAULT: search every image loaded into the process.
+    guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_get_pid_responsible_for_pid") else {
+        return nil
+    }
+    return unsafeBitCast(symbol, to: ResponsiblePIDFunction.self)
+}()

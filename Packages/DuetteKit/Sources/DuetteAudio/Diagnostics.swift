@@ -212,7 +212,8 @@ public final class DiagnosticsCollector {
             appProcesses = ProcessCatalog.processes(
                 of: selectedApp, in: audioSystem.processes(),
                 appPIDs: Set(audioSystem.runningApplicationPIDs(bundleID: selectedApp)),
-                parentPID: audioSystem.parentPID)
+                parentPID: audioSystem.parentPID, responsiblePID: audioSystem.responsiblePID,
+                excludingPID: controller?.ownPID)
         }
 
         var engineReport: DiagnosticsReport.Engine?

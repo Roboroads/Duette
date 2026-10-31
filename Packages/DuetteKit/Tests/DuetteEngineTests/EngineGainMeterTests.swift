@@ -170,6 +170,38 @@ final class EngineGainMeterTests: XCTestCase {
         XCTAssertEqual(stats().tap_zero_frames, 9)
     }
 
+    func testTapHadAudioLatchesUntilTheNextConfigure() {
+        configure()
+        input.fill(0, with: 0)
+        runCycle(engine, input: input, output: output)
+        XCTAssertFalse(stats().tap_had_audio)
+        input.set(0, channel: 1, frame: 3, to: 0.01)
+        runCycle(engine, input: input, output: output)
+        XCTAssertTrue(stats().tap_had_audio)
+        input.fill(0, with: 0)
+        runCycle(engine, input: input, output: output)
+        runCycle(engine, input: input, output: output)
+        XCTAssertTrue(stats().tap_had_audio, "silence afterwards does not undo it")
+        configure()
+        XCTAssertFalse(stats().tap_had_audio)
+    }
+
+    func testStopZeroesTheMeters() {
+        configure()
+        runCycle(engine, input: input, output: output)
+        XCTAssertGreaterThan(meters().output.peak, 0)
+        XCTAssertGreaterThan(meters().app.peak, 0)
+        // No such device, so the HAL calls fail; the engine still counts as stopped and its
+        // meters drop to zero.
+        let bogus = unsafeBitCast(UnsafeMutableRawPointer(bitPattern: 0x1000)!, to: AudioDeviceIOProcID.self)
+        XCTAssertNotEqual(duette_engine_stop(engine, 0xFFFF_FF00, bogus), 0)
+        XCTAssertFalse(duette_engine_is_running(engine))
+        XCTAssertEqual(meters().output.peak, 0)
+        XCTAssertEqual(meters().output.rms, 0)
+        XCTAssertEqual(meters().app.peak, 0)
+        XCTAssertEqual(meters().mic.peak, 0)
+    }
+
     func testConfigureResetsZeroRunsAndAbsentSourcesReadZero() {
         configure()
         input.fill(0, with: 0)
