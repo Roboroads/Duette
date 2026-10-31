@@ -180,11 +180,23 @@ private func soakOnce(_ ctx: Context, _ plan: SoakPlan, buffer: UInt32, duette: 
                 + "allow it (System Settings > Privacy & Security > Microphone), make some noise, and run this again")
     guard heard else { return notes }
 
-    // The clocks of the sink and the mic, for the drift between them.
-    let sinkID = Device.find(uid: DuetteDriver.sinkUID)
+    // The clocks of "Duette" (it shares the sink's) and the mic, for the drift between them. A
+    // device's current time can be read only while this process runs IO on it itself, so a small
+    // recorder runs on the mic as well.
     let micID = status.micUID.flatMap { Device.find(uid: $0) }
-    let sinkStart = sinkID.flatMap(clockReading)
-    let micStart = micID.flatMap(clockReading)
+    var micClock: Recorder?
+    if let micID, let clock = try? Recorder(device: micID, seconds: 1, sampleRate: Device.nominalRate(micID) ?? Device.sampleRate) {
+        do {
+            try clock.start()
+            clock.waitForFrames(4800, timeout: 3)
+            micClock = clock
+        } catch {
+            note("drift: cannot run IO on the mic to read its clock: \(error)")
+        }
+    }
+    defer { micClock?.stop() }
+    let sinkStart = clockReading(duette)
+    let micStart = micClock != nil ? micID.flatMap(clockReading) : nil
 
     let window = 48000
     var expect: [ToneExpectation] = []
@@ -252,8 +264,9 @@ private func soakOnce(_ ctx: Context, _ plan: SoakPlan, buffer: UInt32, duette: 
         }
     }
     let elapsed = Date().timeIntervalSince(soakStart)
-    let sinkEnd = sinkID.flatMap(clockReading)
-    let micEnd = micID.flatMap(clockReading)
+    let sinkEnd = clockReading(duette)
+    let micEnd = micClock != nil ? micID.flatMap(clockReading) : nil
+    micClock?.stop()
 
     r.info(prefix + "duration", String(format: "%.0f s, %ld one-second windows", elapsed, windows))
     let windowDetail: String
@@ -298,10 +311,11 @@ private func soakOnce(_ ctx: Context, _ plan: SoakPlan, buffer: UInt32, duette: 
        let sinkRate = Drift.rate(from: sinkStart, to: sinkEnd), let micRate = Drift.rate(from: micStart, to: micEnd),
        let ppm = Drift.ppm(mic: micRate, sink: sinkRate) {
         r.info(prefix + "drift", String(format: "%+.1f ppm", ppm),
-               detail: String(format: "mic '%@' %.3f Hz against the sink's %.3f Hz, from their time stamps over %.0f s",
+               detail: String(format: "mic '%@' %.3f Hz against the sink's clock (read on Duette) %.3f Hz, from their time stamps over %.0f s",
                               status.micName ?? "?", micRate, sinkRate, elapsed))
     } else {
-        r.info(prefix + "drift", "not measured", detail: micID == nil ? "no mic in the engine" : "a device's current time was unreadable")
+        r.info(prefix + "drift", "not measured",
+               detail: micID == nil ? "no mic in the engine" : micClock == nil ? "no IO on the mic in this process" : "a device's current time was unreadable")
     }
 
     // Last: "Measure latency", as in the app.

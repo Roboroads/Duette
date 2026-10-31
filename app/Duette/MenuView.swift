@@ -395,7 +395,7 @@ struct LaunchAtLoginRow: View {
             .accessibilityLabel("Open Duette when I log in")
 
             if state == .needsApproval {
-                Text("Your Mac needs your OK first. Switch Duette on in Login Items.")
+                Text("Your Mac needs your OK first. Switch Duette on in Login Items & Extensions.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -435,12 +435,61 @@ struct ExpertsView: View {
                 .accessibilityElement(children: .combine)
             }
 
+            LatencyCheckView(model: model)
+
             Toggle("Play test tone (driver)", isOn: Binding(get: { model.driverToneOn },
                                                            set: { model.setDriverTone($0) }))
                 .controlSize(.large)
             Toggle("Play test tone (engine)", isOn: Binding(get: { model.engineToneOn },
                                                            set: { model.setEngineTone($0) }))
                 .controlSize(.large)
+        }
+    }
+}
+
+/// "Measure latency": a button, then one plain sentence with what Duette adds.
+struct LatencyCheckView: View {
+    @ObservedObject var model: AppModel
+
+    private static let explanation = "Plays a short test sound through Duette. Apps listening to Duette hear it."
+
+    private var measuring: Bool { model.latencyCheck == .measuring }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                model.measureLatency()
+            } label: {
+                HStack(spacing: 8) {
+                    if measuring {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityHidden(true)
+                    }
+                    Text(measuring ? "Measuring…" : "Measure latency")
+                }
+                .frame(maxWidth: .infinity, minHeight: 30)
+            }
+            .controlSize(.large)
+            .disabled(measuring)
+            .accessibilityHint(Self.explanation)
+
+            if let result = model.latencyResult {
+                Text(result)
+                    .font(.subheadline.bold())
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail = model.latencyDetail {
+                    Text(detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if !measuring {
+                Text(Self.explanation)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

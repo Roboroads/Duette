@@ -333,7 +333,7 @@ final class AppModel: ObservableObject {
             message = nil
         } catch {
             log.error("Launch at login could not be changed: \(error.localizedDescription, privacy: .public)")
-            message = "Duette couldn't change this. You can also do it in System Settings > General > Login Items."
+            message = "Duette couldn't change this. You can also do it in System Settings > General > Login Items & Extensions."
         }
         refreshLoginItem()
     }
@@ -384,17 +384,65 @@ final class AppModel: ObservableObject {
 
     // MARK: Measure latency
 
+    /// "Measure latency": the engine pauses for about a second while a test sound goes through
+    /// Duette, and the answer is said in plain words. Apps listening to Duette hear the sound.
     func measureLatency() {
+        guard latencyCheck != .measuring else { return }
+        latencyCheck = .measuring
+        controller.measureLatency(timing: services.deviceTiming) { [weak self] result in
+            guard let self else { return }
+            self.services.runOnMain { self.finishLatency(result) }
+        }
+    }
+
+    private func finishLatency(_ result: Result<LatencyMeasurement, LatencyMeasurementError>) {
+        switch result {
+        case .success(let measurement):
+            latencyCheck = .done(measurement)
+            let rate = measurement.sampleRate > 0 ? measurement.sampleRate : 48000
+            let summary = String(format: "%.1f ms: loopback %.2f ms measured, %.2f ms estimated", measurement.totalMilliseconds,
+                                 measurement.loopback.meanFrames * 1000 / rate,
+                                 Double(measurement.estimate.loopbackFrames) * 1000 / rate)
+            selfTests["latency"] = summary
+            log.info("Latency measured: \(summary, privacy: .public)")
+        case .failure(let error):
+            latencyCheck = .failed(Self.plainWords(error))
+            selfTests["latency"] = "failed: \(error)"
+            log.error("The latency could not be measured: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    static func plainWords(_ error: LatencyMeasurementError) -> String {
+        switch error {
+        case .notRunning:
+            return "Duette isn't running yet, so there is nothing to measure."
+        case .driverMissing:
+            return "Duette's driver isn't installed. Run the Duette installer and try again."
+        case .notHeard:
+            return "Duette couldn't hear its test sound. Check that Duette may use the microphone, then try again."
+        case .unsupported, .failed:
+            return "The measurement didn't work. Please try again."
+        }
     }
 
     /// One plain sentence: what Duette adds, or why there is no answer.
     var latencyResult: String? {
-        nil
+        switch latencyCheck {
+        case .idle, .measuring:
+            return nil
+        case .done(let measurement):
+            return "Duette adds about \(max(1, Int(measurement.totalMilliseconds.rounded()))) ms of delay."
+        case .failed(let text):
+            return text
+        }
     }
 
     /// The measured loopback next to what was expected.
     var latencyDetail: String? {
-        nil
+        guard case .done(let measurement) = latencyCheck else { return nil }
+        let rate = measurement.sampleRate > 0 ? measurement.sampleRate : 48000
+        return String(format: "The test sound took %.1f ms through Duette (expected %.1f ms).",
+                      measurement.loopback.meanFrames * 1000 / rate, Double(measurement.estimate.loopbackFrames) * 1000 / rate)
     }
 
     /// What the self-tests found, for diagnostics.
