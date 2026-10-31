@@ -4,17 +4,18 @@
 # HAL and writes a pass/fail table. Run from .github/workflows/integration.yml.
 #
 # Usage: scripts/ci/integration.sh <phase> [args]
-#   setup         build what is missing, grant TCC, install build/test-out/Duette.driver
-#   blocking      every check; each must pass on the runner
-#   soak [MIN]    the long engine run (default 10 minutes)
-#   summary       the table, to stdout and $GITHUB_STEP_SUMMARY; uninstalls the driver
-#   all           setup, blocking, summary
+#   setup               build what is missing, grant TCC, install build/test-out/Duette.driver
+#   blocking            every check; each must pass on the runner
+#   soak [MIN] [FRAMES] the long engine run (default 10 minutes at 128 frames)
+#   summary             the table, to stdout and $GITHUB_STEP_SUMMARY; uninstalls the driver
+#   all                 setup, blocking, summary
 #
 # Results go to build/integration/: results.tsv (every check, from duettectl --report),
 # commands.tsv (one line per command) and one log per command.
 #
-# It changes the machine: TCC.db rows, the installed plug-in, default devices. Do not run it on a
-# Mac someone uses.
+# It changes the machine: it writes TCC.db rows, restarts coreaudiod, installs and uninstalls the
+# plug-in and changes the default devices. So it runs only in GitHub Actions, or where
+# DUETTE_ALLOW_LOCAL=1 says the Mac can take it.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -30,6 +31,39 @@ if [ "$(uname -s)" != Darwin ]; then
   echo "integration.sh: macOS only" >&2
   exit 2
 fi
+if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${DUETTE_ALLOW_LOCAL:-}" != 1 ]; then
+  echo "integration.sh: this rewrites TCC.db, restarts coreaudiod and uninstalls the driver." >&2
+  echo "It runs in GitHub Actions; on a Mac you can spare, set DUETTE_ALLOW_LOCAL=1." >&2
+  exit 2
+fi
+
+# Runs a command with a time limit (macOS has no timeout(1)); exit status 124 when it ran out.
+with_timeout() { # seconds command...
+  local limit=$1
+  shift
+  "$@" &
+  local pid=$!
+  (
+    sleep "$limit"
+    kill -TERM "$pid" 2>/dev/null && sleep 5 && kill -KILL "$pid" 2>/dev/null
+  ) &
+  local watcher=$! rc=0
+  wait "$pid" || rc=$?
+  if kill -0 "$watcher" 2>/dev/null; then
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+  else
+    rc=124
+  fi
+  return "$rc"
+}
+
+# Helpers a command started and did not stop (afplay, a reader or player duettectl).
+kill_leftovers() {
+  pkill -x afplay 2>/dev/null || true
+  pkill -f "$cli reader" 2>/dev/null || true
+  pkill -f "$cli play" 2>/dev/null || true
+}
 
 # ---------------------------------------------------------------------------------- helpers
 
@@ -50,11 +84,15 @@ run_cmd() {
       echo "==> $id is still running after $((limit - 8)) s; sampling it" >>"$log.sample"
       sample "$pid" 3 -mayDie -file "$out/$id.sample.txt" >/dev/null 2>&1 || true
     fi
+    # duettectl's own watchdog ends it at `limit`; if even that is stuck, end it here.
+    sleep 20
+    kill -KILL "$pid" 2>/dev/null || true
   ) &
   local watcher=$!
   wait "$pid" || rc=$?
   kill "$watcher" 2>/dev/null || true
   wait "$watcher" 2>/dev/null || true
+  kill_leftovers
   cat "$log"
   if [ -f "$out/$id.sample.txt" ]; then
     echo "---- stack sample of the stuck command (main and audio threads) ----"
@@ -183,26 +221,30 @@ phase_blocking() {
   local failed=0
   # M1: the driver alone, then the hidden sink as the engine's main device.
   run_cmd blocking selftest 60 "tone.left.440hz off.silence" -- selftest || failed=1
-  run_cmd blocking loopback-128 60 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 128 loopback || failed=1
-  run_cmd blocking loopback-64 60 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 64 loopback || failed=1
+  run_cmd blocking loopback-128 90 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 128 loopback || failed=1
+  run_cmd blocking loopback-64 90 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 64 loopback || failed=1
   run_cmd blocking hidden-agg 60 "main-subdevice clock-device ioproc-runs engine-tone.440hz" -- hidden-agg || failed=1
   # M2 and M4 on the mic path.
   run_cmd blocking engine 60 "duette.1000hz overloads" -- engine --mic test-mic --seconds 3 --expect '1000@-12' || failed=1
-  run_cmd blocking verify-mic 150 "mic.1000hz mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz overloads" -- verify-mic || failed=1
+  run_cmd blocking verify-mic 150 "mic.1000hz mic.residual mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz windows.clean overloads" -- verify-mic || failed=1
   # M3 and M4: a process tap mixed with the mic, at 48 kHz and at 44.1 kHz.
-  run_cmd blocking verify-mix 150 "mix.440hz mix.1000hz app-gain-0.5.440hz mic-muted.1000hz overloads" -- verify-mix || failed=1
-  run_cmd blocking rate-mismatch 150 "tap mix.440hz mix.1000hz residual" -- rate-mismatch || failed=1
-  # 'dcli' and the feedback-loop warning, with readers that go through an aggregate or VPIO.
+  run_cmd blocking verify-mix 150 "mix.440hz mix.1000hz residual app-gain-0.5.440hz mic-muted.1000hz app-muted.440hz windows.clean overloads" -- verify-mix || failed=1
+  run_cmd blocking rate-mismatch 150 "tap mix.440hz mix.1000hz residual app-muted.440hz windows.clean" -- rate-mismatch || failed=1
+  # 'dcli' and the feedback-loop warning: readers that read directly, two at once, through an
+  # aggregate or through VPIO.
+  run_cmd blocking dcli-direct 60 "direct.lists-pid direct.clears" -- dcli --mode direct || failed=1
+  run_cmd blocking dcli-concurrent 60 "concurrent.first-listed concurrent.second-listed concurrent.second-clears" -- dcli --mode concurrent || failed=1
   run_cmd blocking dcli-aggregate 60 "aggregate.lists-pid aggregate.clears" -- dcli --mode aggregate || failed=1
   run_cmd blocking dcli-vpio 60 "vpio.lists-pid vpio.clears" -- dcli --mode vpio || failed=1
-  run_cmd blocking feedback-loop 120 "dcli.lists-app detector.fires detector.ignores-own-process controller.warns controller.clears" \
+  run_cmd blocking feedback-loop 120 "dcli.lists-own-process dcli.lists-app detector.fires detector.ignores-own-process controller.warns controller.clears" \
     -- feedback-loop --controller || failed=1
 
   # DuetteKit's HAL tests, now with the driver installed: testHiddenSinkAsMainSubdeviceRunsTheEngine
   # runs here instead of being skipped.
   echo "::group::DuetteKit HALSmokeTests with the driver installed"
   local log=$out/kit-hal-tests.log rc=0 started=$SECONDS
-  swift test --package-path Packages/DuetteKit --scratch-path build/kit/debug --filter HALSmokeTests >"$log" 2>&1 || rc=$?
+  with_timeout 900 swift test --package-path Packages/DuetteKit --scratch-path build/kit/debug --filter HALSmokeTests >"$log" 2>&1 || rc=$?
+  [ "$rc" -ne 124 ] || echo "::error::DuetteKit HALSmokeTests did not finish in 900 s"
   grep -E "Test Case|HAL |error|failed|skipped" "$log" | tail -n 80 || true
   echo "::endgroup::"
   printf '%s\t%s\t%s\t%s\t%s\n' blocking kit-hal-tests "$rc" "$((SECONDS - started))" "hidden-sink-engine" >>"$commands"
@@ -234,30 +276,48 @@ output_uid() { # name
   "$cli" list 2>/dev/null | sed -n "s/.*device [0-9]* '$1' uid=\(.*\) in=[0-9]* out=[1-9].*/\1/p" | head -n 1
 }
 
-# The soak gates on zero overloads and dropouts over 10 minutes. The runner is a VM whose I/O
-# threads wake late now and then (coreaudiod: "Overload possibly due to safety violation"), so the
-# soak runs first against the machine's own devices with an IOProc that does nothing but copy:
-# when those overload too, the soak's failures are the machine's, and its row says
-# "needs hands-on" (checklist step 7d, buffer sizes, on a real Mac).
+# The soak wants zero overloads and no dropouts for 10 minutes. The runner is a VM whose I/O
+# threads wake late now and then (coreaudiod: "Overload possibly due to safety violation"), so
+# first the same shapes run on the machine's own devices with an IOProc that only copies: one
+# output device, and an aggregate of an output and a second clock (drift compensated), which is
+# what the engine runs. The verdict:
+#   PASS            the soak passed;
+#   needs hands-on  it failed, but every failed second had an overload and the machine's own
+#                   devices overloaded too (checklist steps 6 and 7d decide, on a real Mac);
+#   FAIL            anything else.
 phase_soak() {
   require_setup
-  local minutes=${1:-10}
-  local limit
+  local minutes=${1:-10} buffer=${2:-128}
+  local limit rc=0 controls=0 unexplained group
   local apple null sink=me.roboroads.duette.sink mic=me.roboroads.duette.test-mic
   limit=$(awk -v m="$minutes" 'BEGIN { printf "%d", m * 60 + 240 }')
   apple=$(output_uid 'Apple Virtual Sound Device')
   null=$(output_uid 'Null Audio Device')
-  # The same two shapes on Apple's devices and on Duette's: one output device, and an aggregate
-  # of an output device and a second clock (drift compensated), which is what the engine runs.
   if [ -n "$apple" ]; then
-    run_cmd control control-apple 120 "count" -- overloads --device "$apple" --seconds 60 || true
+    run_cmd control "control-apple-$buffer" 120 "count" -- --buffer "$buffer" overloads --device "$apple" --seconds 60 || true
     if [ -n "$null" ]; then
-      run_cmd control control-apple-aggregate 120 "count" -- overloads --device "$apple" --with "$null" --seconds 60 || true
+      run_cmd control "control-apple-aggregate-$buffer" 120 "count" -- --buffer "$buffer" overloads --device "$apple" --with "$null" --seconds 60 || true
     fi
   fi
-  run_cmd control control-duette-sink 120 "count" -- overloads --device "$sink" --seconds 60 || true
-  run_cmd control control-duette-aggregate 120 "count" -- overloads --device "$sink" --with "$mic" --seconds 60 || true
-  run_cmd hands-on soak "$limit" "windows overloads reader-overloads dropouts" -- soak --minutes "$minutes"
+  run_cmd control "control-duette-sink-$buffer" 120 "count" -- --buffer "$buffer" overloads --device "$sink" --seconds 60 || true
+  run_cmd control "control-duette-aggregate-$buffer" 120 "count" -- --buffer "$buffer" overloads --device "$sink" --with "$mic" --seconds 60 || true
+  run_cmd soak "soak-$buffer" "$limit" "windows windows.unexplained overloads reader-overloads dropouts" -- --buffer "$buffer" soak --minutes "$minutes" || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+
+  # Overloads the machine's own devices had in the controls.
+  controls=$(awk -F'\t' -v b="-$buffer" '$1 ~ /^control-/ && $1 ~ b"$" && $2 == "count" { split($4, a, " "); n += a[1] } END { print n + 0 }' "$results")
+  unexplained=$(awk -F'\t' -v id="soak-$buffer" '$1 == id && $2 == "windows.unexplained" { print $3 }' "$results" | tail -n 1)
+  if [ "$rc" -ne 124 ] && [ "$unexplained" = PASS ] && [ "$controls" -gt 0 ]; then
+    group=hands-on
+    add_check "soak-$buffer" verdict INFO "needs hands-on" "every failed second had an overload; the machine's own devices had $controls in the controls"
+  else
+    group=soak
+    add_check "soak-$buffer" verdict FAIL "fail" "failures not explained by the machine: windows.unexplained $unexplained, $controls control overloads, exit $rc"
+  fi
+  # run_cmd wrote the line as group "soak"; the verdict decides how the summary shows it.
+  awk -F'\t' -v OFS='\t' -v id="soak-$buffer" -v g="$group" '$2 == id { $1 = g } { print }' "$commands" >"$commands.tmp"
+  mv "$commands.tmp" "$commands"
+  [ "$group" = hands-on ]
 }
 
 # Turns the results into the job summary: one row per command, then every check.
@@ -316,7 +376,7 @@ phase_summary() {
     2>/dev/null | tail -n 60 || true
   echo "::endgroup::"
   echo "::group::driver log"
-  /usr/bin/log show --last 30m --info --predicate 'subsystem == "me.roboroads.duette.driver"' 2>/dev/null | tail -n 150 || true
+  /usr/bin/log show --last 30m --info --predicate 'subsystem == "me.roboroads.duette.driver"' 2>/dev/null | tail -n 400 || true
   echo "::endgroup::"
   echo "::group::uninstall"
   sudo bash scripts/uninstall.sh || true

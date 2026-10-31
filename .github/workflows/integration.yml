@@ -7,31 +7,17 @@ name: Integration
 #
 # Every check is blocking: the runner can do all of them (taps included, once TCC allows System
 # Audio Recording before the first tap). What CI cannot reach (a real microphone, a real call app,
-# hot-plug, sleep and wake, the UI) is left to the hands-on checklist.
-#
-# The 10-minute soak runs nightly, by hand (workflow_dispatch), and on pull requests labelled
-# "soak". It is the one job allowed to fail: it wants zero overloads, and the runner (a VM) has
-# late I/O cycles on its own devices too, which the soak job measures first (the "control" rows).
-# On the runner its row says "needs hands-on"; the real verdict comes from a Mac.
+# hot-plug, sleep and wake, the UI) is left to the hands-on checklist. The long soak is
+# soak.yml.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
-  schedule:
-    - cron: '23 2 * * *'
   workflow_dispatch:
-    inputs:
-      soak_minutes:
-        description: Soak length in minutes
-        default: '10'
 
 concurrency:
-  group: >-
-    integration-${{ github.event_name == 'pull_request'
-      && format('{0}-{1}', github.ref, github.event.action == 'labeled' && 'soak' || 'checks')
-      || github.sha }}
+  group: integration-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -44,7 +30,6 @@ defaults:
 jobs:
   integration:
     name: integration (macOS)
-    if: github.event_name != 'schedule' && github.event.action != 'labeled'
     runs-on: macos-15
     timeout-minutes: 50
     steps:
@@ -57,44 +42,13 @@ jobs:
         run: bash scripts/ci/integration.sh blocking
 
       - name: Summary
-        if: ${{ !cancelled() }}
+        if: always()
         run: bash scripts/ci/integration.sh summary
 
       - name: Upload logs
-        if: ${{ !cancelled() }}
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-logs
-          path: build/integration
-          if-no-files-found: ignore
-
-  soak:
-    name: soak (macOS)
-    if: >-
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'soak'))
-    runs-on: macos-15
-    timeout-minutes: 45
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up (build, TCC, install the test-device driver)
-        run: bash scripts/ci/integration.sh setup
-
-      - name: Soak
-        env:
-          SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '10' }}
-        run: bash scripts/ci/integration.sh soak "$SOAK_MINUTES"
-
-      - name: Summary
-        if: ${{ !cancelled() }}
-        run: bash scripts/ci/integration.sh summary
-
-      - name: Upload logs
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: soak-logs
           path: build/integration
           if-no-files-found: ignore
