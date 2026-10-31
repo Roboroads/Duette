@@ -64,6 +64,7 @@ public struct EngineStatus: Equatable, Codable {
     public var tappedPIDs: [pid_t] = []
     /// The app is playing but its tap has delivered only exact silence for more than
     /// EngineController.silenceHintSeconds: the System Audio Recording permission is probably off.
+    /// If the tap carried sound earlier, macOS must also say the permission is denied now.
     public var appSilentWhilePlaying = false
     /// Creating the app's tap failed; the engine runs without the app until the next rebuild.
     public var tapError: CoreAudioError?
@@ -153,6 +154,9 @@ public final class EngineController {
     private var pendingRetry: ScheduledWork?
     private var monitorTimer: ScheduledWork?
     private var failures = 0
+    /// Monitor ticks until macOS is asked again about System Audio Recording, and its last answer.
+    private var permissionCheckTicks = 0
+    private var permissionRevoked = false
 
     private struct DeviceChoice: Equatable {
         var sink: AudioObjectID?
@@ -549,6 +553,7 @@ public final class EngineController {
         session = partial
         audioSystem.watch(devices: watched, aggregate: aggregate)
         failures = 0
+        forgetPermissionCheck()
 
         let sources = EngineSources(mic: mic != nil, app: tap != nil)
         let state: EngineState
@@ -659,15 +664,44 @@ public final class EngineController {
         }
     }
 
-    /// The tap has delivered nothing but exact zeros since it started, for a while, although the
-    /// app is playing. Once it has delivered sound, later silence is a quiet app, not a denial.
+    /// The tap is delivering nothing but exact zeros, for a while, although the app is playing.
+    ///
+    /// - A tap that has never carried sound: the permission was probably never given, and that is
+    ///   the whole signal (macOS has no way to ask).
+    /// - A tap that did carry sound: exact zeros are then also what a quiet call or a muted app
+    ///   looks like, so silence alone proves nothing. Only if macOS itself says System Audio
+    ///   Recording is denied now is it a revoked permission, and the hint shows at once, without a
+    ///   rebuild. "Allowed" and "no answer" both leave it a quiet app, so a quiet call can never
+    ///   raise the alarm.
     private func captureLooksDenied() -> Bool {
-        guard let session, session.tap != nil else { return false }
+        guard let session, session.tap != nil else { return forgetPermissionCheck() }
         let stats = engine.stats()
-        guard !stats.tapHadAudio else { return false }
         let silentSeconds = Double(stats.tapZeroFrames) / session.sampleRate
-        guard silentSeconds > Self.silenceHintSeconds else { return false }
-        return audioSystem.processes().contains { session.group.contains($0.objectID) && $0.isRunningOutput }
+        guard silentSeconds > Self.silenceHintSeconds,
+              audioSystem.processes().contains(where: { session.group.contains($0.objectID) && $0.isRunningOutput })
+        else { return forgetPermissionCheck() }
+        if !stats.tapHadAudio { return true }
+        return permissionWasRevoked()
+    }
+
+    /// Whether macOS says System Audio Recording is denied. Asked right away when the silence
+    /// starts, then every `permissionCheckSeconds` for as long as it lasts.
+    private func permissionWasRevoked() -> Bool {
+        if permissionCheckTicks <= 0 {
+            permissionRevoked = audioSystem.systemAudioCaptureAuthorization() == .denied
+            permissionCheckTicks = Int((Self.permissionCheckSeconds / Self.monitorInterval).rounded(.up))
+        }
+        permissionCheckTicks -= 1
+        return permissionRevoked
+    }
+
+    /// The silence is over (or never was one): the next one starts with a fresh question. Returns
+    /// false, the answer to "does capture look denied".
+    @discardableResult
+    private func forgetPermissionCheck() -> Bool {
+        permissionCheckTicks = 0
+        permissionRevoked = false
+        return false
     }
 
     // MARK: - Status
