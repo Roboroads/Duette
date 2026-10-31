@@ -138,7 +138,7 @@ The IOProc zeroes the output first, so whatever it doesn't write is silence. A c
 
 States: `idle`, `waitingForDriver`, `waitingForApp(bundleID)`, `running(none | micOnly | appOnly | both)` and `error(status, attempt)`. With the sink missing it waits for the driver and builds as soon as the sink appears. With an app chosen but not running it runs with the microphone and adds the app when its processes appear.
 
-A build does, in order: look up the sink and the microphone, find the app's process objects and create the tap, create the aggregate, set its buffer size, resolve the stream layout, configure the engine, start the IOProc, and publish the new status. A failure at any step tears down what was built, sets `error` with the OSStatus, and retries after 1, 2, then 5 seconds, repeating 5.
+A build does, in order: look up the sink and the microphone, find the app's process objects and create the tap, create the aggregate, set its buffer size, resolve the stream layout, configure the engine, start the IOProc, and publish the new status. A failure at any step tears down what was built, sets `error` with the OSStatus, and retries after 1 second, then 2, then every 5 seconds until a build works.
 
 **Every rebuild is a full teardown and build on the control queue, debounced by 250 ms.** The triggers:
 
@@ -160,5 +160,5 @@ The app's `AppModel` owns the `EngineController` and `Settings` (UserDefaults, w
 - There are three gain stages, not two: the app, the microphone and a master after the mix.
 - Feedback detection uses `'dcli'` together with the HAL's process objects.
 - The driver doesn't take libASPL's device mutex on the I/O path, and its writer tolerates several writers.
-- Nothing resamples except the aggregate's drift compensation. Whether a 44.1 kHz microphone or tap is handled well is checked in CI by `duettectl rate-mismatch`, and on a real Mac by [docs/TESTING.md](TESTING.md).
+- Nothing resamples except the aggregate's drift compensation. `duettectl rate-mismatch` checks a tap at 44.1 kHz only (the test speaker). A microphone at another rate has no automated check, and neither does a 44.1 kHz tap on a real Mac outside the hands-on test in [docs/TESTING.md](TESTING.md).
 - "Export Diagnostics…" doesn't write to the Desktop by itself. It builds the zip in a scratch folder and asks where to put it with a Save panel, which needs no permission to write to the Desktop and doesn't trigger macOS's question about it.
