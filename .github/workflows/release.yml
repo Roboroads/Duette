@@ -1,0 +1,224 @@
+name: Release
+
+# Builds, signs, notarizes and publishes the installer for one tag.
+#
+# Called by release-please.yml after the release PR is merged, and by
+# prerelease.yml for test builds. Can also be run by hand to rebuild the files
+# of an existing release: Actions > Release > Run workflow, with the tag name.
+#
+# There is deliberately no "push: tags" trigger. See release-please.yml.
+#
+# Without the signing secrets the same scripts produce an ad-hoc signed,
+# unsigned pkg. It is kept as a workflow artifact, and nothing is published
+# unless publish_unsigned is set.
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: Tag whose release gets the files, for example v0.1.0
+        type: string
+        required: true
+      ref:
+        description: Commit, branch or tag to build. Empty means the tag.
+        type: string
+        required: false
+        default: ''
+      publish_unsigned:
+        description: Publish even when the pkg could not be signed and notarized
+        type: boolean
+        required: false
+        default: false
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Tag whose release gets the files, for example v0.1.0
+        type: string
+        required: true
+      ref:
+        description: Commit, branch or tag to build. Empty means the tag.
+        type: string
+        required: false
+        default: ''
+      publish_unsigned:
+        description: Publish even when the pkg could not be signed and notarized
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: release-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  package:
+    name: package ${{ inputs.tag_name }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || inputs.tag_name }}
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          cmake --version | head -n 1
+
+      - name: Work out version and file name
+        id: meta
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          version="$(tr -d '[:space:]' < version.txt)"
+          suffix=""
+          if [ "$TAG_NAME" != "v$version" ]; then
+            case "$TAG_NAME" in
+              v[0-9]*)
+                echo "::error::Tag $TAG_NAME does not match version.txt ($version). Build the tag's own commit."
+                exit 1
+                ;;
+            esac
+            suffix="$TAG_NAME"
+          fi
+          {
+            echo "version=$version"
+            echo "suffix=$suffix"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "artifact=duette-release-${TAG_NAME//\//-}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $TAG_NAME: version $version, commit $(git rev-parse --short HEAD)"
+
+      # The scripts/ci contract: each script leaves its product in build/out.
+      - name: Build driver
+        if: hashFiles('scripts/ci/build-driver.sh') != ''
+        run: bash scripts/ci/build-driver.sh
+
+      - name: Build app
+        if: hashFiles('scripts/ci/build-app.sh') != ''
+        run: bash scripts/ci/build-app.sh
+
+      - name: Build duettectl
+        if: hashFiles('scripts/ci/build-cli.sh') != ''
+        run: bash scripts/ci/build-cli.sh
+
+      - name: Import signing certificates
+        env:
+          MACOS_CERT_APP_P12_BASE64: ${{ secrets.MACOS_CERT_APP_P12_BASE64 }}
+          MACOS_CERT_INSTALLER_P12_BASE64: ${{ secrets.MACOS_CERT_INSTALLER_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/sign.sh import-certs
+
+      - name: Sign driver, app and duettectl
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/sign.sh bundles
+
+      - name: Build installer
+        id: pkg
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          DUETTE_PKG_SUFFIX: ${{ steps.meta.outputs.suffix }}
+        run: bash scripts/build-pkg.sh
+
+      - name: Notarize and staple
+        id: notarize
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          PKG_PATH: ${{ steps.pkg.outputs.pkg_path }}
+        run: bash scripts/notarize.sh "$PKG_PATH"
+
+      - name: Checksums
+        working-directory: build/release
+        run: |
+          files=(./*.pkg uninstall.sh)
+          if [ -f TESTING.md ]; then files+=(TESTING.md); fi
+          shasum -a 256 "${files[@]}" | sed 's| \./| |' > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Summary
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+          SIGNED: ${{ steps.pkg.outputs.signed }}
+          NOTARIZED: ${{ steps.notarize.outputs.notarized }}
+        run: |
+          {
+            echo "### $TAG_NAME"
+            echo
+            echo "- Signed with Developer ID: $SIGNED"
+            echo "- Notarized and stapled: $NOTARIZED"
+            echo
+            echo '```'
+            cat build/release/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$NOTARIZED" != "true" ]; then
+            echo "::warning::This pkg is not notarized (signing secrets missing, or not signed). A Mac will warn before opening it."
+          fi
+
+      - name: Keep the files as a workflow artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          path: build/release
+          if-no-files-found: ignore
+
+      - name: Publish to the GitHub release
+        if: ${{ steps.notarize.outputs.notarized == 'true' || inputs.publish_unsigned }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag_name }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          SIGNED: ${{ steps.pkg.outputs.signed }}
+          NOTARIZED: ${{ steps.notarize.outputs.notarized }}
+          PKG_PATH: ${{ steps.pkg.outputs.pkg_path }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pkg_name="$(basename "$PKG_PATH")"
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            case "$TAG_NAME" in
+              test-*) echo "Test build of version $VERSION from commit \`${SHA:0:7}\`. This is not a release." ;;
+              *) echo "Build of version $VERSION from commit \`${SHA:0:7}\`." ;;
+            esac
+            echo
+            echo "- Signed with Developer ID: $SIGNED"
+            echo "- Notarized and stapled: $NOTARIZED"
+            echo "- Build: $RUN_URL"
+            echo
+            echo "Install: download \`$pkg_name\` below and double-click it."
+            echo
+            echo "Remove: \`sudo \"/Library/Application Support/Duette/uninstall.sh\"\`"
+          } > "$notes"
+
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            # A release made by release-please keeps its own notes. Test releases get fresh ones.
+            case "$TAG_NAME" in
+              v[0-9]*) ;;
+              *) gh release edit "$TAG_NAME" --notes-file "$notes" --prerelease ;;
+            esac
+          else
+            gh release create "$TAG_NAME" --target "$SHA" --prerelease --title "$TAG_NAME" --notes-file "$notes"
+          fi
+
+          files=(build/release/*.pkg build/release/uninstall.sh build/release/SHA256SUMS)
+          if [ -f build/release/TESTING.md ]; then files+=(build/release/TESTING.md); fi
+          gh release upload "$TAG_NAME" "${files[@]}" --clobber
+          gh release view "$TAG_NAME" --json url --jq .url
+
+      - name: Delete the temporary keychain
+        if: ${{ always() }}
+        run: bash scripts/sign.sh cleanup

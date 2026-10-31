@@ -1,0 +1,169 @@
+name: Packaging
+
+# Proves the release pipeline without secrets and without the real driver and
+# app: lints the scripts and workflows, then builds an ad-hoc signed pkg from
+# stub bundles, inspects it, installs it on the runner and uninstalls it
+# again. The real thing is release.yml and prerelease.yml.
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'scripts/build-pkg.sh'
+      - 'scripts/sign.sh'
+      - 'scripts/notarize.sh'
+      - 'scripts/duette-diagnose.sh'
+      - 'version.txt'
+      - 'release-please-config.json'
+      - '.release-please-manifest.json'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'packaging/**'
+      - 'scripts/build-pkg.sh'
+      - 'scripts/sign.sh'
+      - 'scripts/notarize.sh'
+      - 'scripts/duette-diagnose.sh'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+concurrency:
+  group: packaging-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: lint (shellcheck, actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          shellcheck --version | sed -n '2p'
+          shellcheck -x \
+            scripts/build-pkg.sh scripts/sign.sh scripts/notarize.sh scripts/duette-diagnose.sh \
+            packaging/uninstall.sh packaging/scripts/preinstall packaging/scripts/postinstall \
+            packaging/tests/*.sh
+
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+      - name: release-please config and manifest are valid
+        run: |
+          jq -e '."release-type" == "simple" and .prerelease == true and ."include-component-in-tag" == false' release-please-config.json
+          jq -e '."." | type == "string"' .release-please-manifest.json
+
+  pkg-dry-run:
+    name: pkg dry run (macOS, ad-hoc)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make stub bundles
+        run: bash packaging/tests/make-stub-bundles.sh
+
+      - name: Sign (no secrets, so ad-hoc)
+        run: |
+          bash scripts/sign.sh import-certs
+          bash scripts/sign.sh bundles
+
+      - name: Build pkg
+        id: pkg
+        run: bash scripts/build-pkg.sh
+
+      - name: Notarize (no secrets, so skipped)
+        id: notarize
+        run: |
+          bash scripts/notarize.sh "${{ steps.pkg.outputs.pkg_path }}" | tee notarize.out
+          grep -qx 'notarized=false' notarize.out
+
+      - name: Check pkg contents
+        run: bash packaging/tests/check-pkg.sh "${{ steps.pkg.outputs.pkg_path }}"
+
+      - name: Install, run the diagnose script, uninstall
+        run: bash packaging/tests/install-test.sh "${{ steps.pkg.outputs.pkg_path }}"
+
+      - name: Upload the ad-hoc pkg
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: duette-pkg-dry-run
+          path: build/release
+          if-no-files-found: ignore
+
+  # Run by hand to check the repo secrets before the real app exists: signs the
+  # stub bundles with the Developer ID certificates, signs and notarizes the
+  # pkg, and fails if the secrets are set but notarization does not succeed.
+  # Without secrets it passes after doing the ad-hoc path again. Not run on
+  # pull requests, so notarization is not spent on every push.
+  signing-check:
+    name: signing check (macOS, uses secrets)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make stub bundles
+        run: bash packaging/tests/make-stub-bundles.sh
+
+      - name: Import signing certificates
+        env:
+          MACOS_CERT_APP_P12_BASE64: ${{ secrets.MACOS_CERT_APP_P12_BASE64 }}
+          MACOS_CERT_INSTALLER_P12_BASE64: ${{ secrets.MACOS_CERT_INSTALLER_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/sign.sh import-certs
+
+      - name: Sign bundles
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/sign.sh bundles
+
+      - name: Build pkg
+        id: pkg
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          DUETTE_PKG_SUFFIX: signing-check
+        run: bash scripts/build-pkg.sh
+
+      - name: Notarize
+        id: notarize
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          PKG_PATH: ${{ steps.pkg.outputs.pkg_path }}
+        run: bash scripts/notarize.sh "$PKG_PATH"
+
+      - name: Check the result
+        env:
+          HAVE_SECRETS: ${{ secrets.MACOS_CERT_APP_P12_BASE64 != '' && secrets.MACOS_CERT_INSTALLER_P12_BASE64 != '' && secrets.ASC_KEY_P8_BASE64 != '' }}
+          SIGNED: ${{ steps.pkg.outputs.signed }}
+          NOTARIZED: ${{ steps.notarize.outputs.notarized }}
+        run: |
+          echo "secrets present: $HAVE_SECRETS, signed: $SIGNED, notarized: $NOTARIZED"
+          if [ "$HAVE_SECRETS" = true ] && { [ "$SIGNED" != true ] || [ "$NOTARIZED" != true ]; }; then
+            echo "::error::The signing secrets are set but the pkg was not signed and notarized."
+            exit 1
+          fi
+          if [ "$HAVE_SECRETS" != true ]; then
+            echo "::warning::No signing secrets, so only the ad-hoc path ran. See docs/SIGNING.md."
+          fi
+
+      - name: Delete the temporary keychain
+        if: ${{ always() }}
+        run: bash scripts/sign.sh cleanup
