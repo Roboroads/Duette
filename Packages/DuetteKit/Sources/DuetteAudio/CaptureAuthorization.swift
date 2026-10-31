@@ -5,8 +5,9 @@ import Foundation
 ///
 /// Public API has no such question: a process tap that is not allowed just delivers exact zeros.
 /// The one way to ask is the preflight call of the private TCC framework, which is looked up at
-/// run time, so a Mac that lacks it, or answers anything unexpected, gives `.unknown` and nothing
-/// else changes. `.unknown` never raises the permission hint after sound (see EngineController).
+/// run time, so a Mac that lacks it, answers anything unexpected, or is older than macOS 14.4 gives
+/// `.unknown`, and the permission hint works on the tap's silence alone as before (see
+/// EngineController).
 enum TCCPreflight {
     /// int TCCAccessPreflight(CFStringRef service, CFDictionaryRef options)
     private typealias Function = @convention(c) (CFString, CFDictionary?) -> Int32
@@ -25,10 +26,18 @@ enum TCCPreflight {
         function?(service as CFString, nil)
     }
 
-    /// The raw answer for System Audio Recording, or nil when it cannot be asked.
+    /// What the answers of the call mean is only known from macOS 14.4, where System Audio
+    /// Recording got its own entry in the privacy settings. Before that the call is not made.
+    static func answersAreKnown(on version: OperatingSystemVersion) -> Bool {
+        (version.majorVersion, version.minorVersion) >= (14, 4)
+    }
+
+    /// The raw answer for System Audio Recording, or nil when it cannot be asked: the macOS is
+    /// older than 14.4, or the framework has no such function.
     static func rawAudioCaptureAnswer(osVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
                                       ask: (String) -> Int32? = TCCPreflight.askTCC) -> Int32? {
-        ask(audioCaptureService)
+        guard answersAreKnown(on: osVersion) else { return nil }
+        return ask(audioCaptureService)
     }
 
     static func audioCapture(osVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,

@@ -64,7 +64,8 @@ public struct EngineStatus: Equatable, Codable {
     public var tappedPIDs: [pid_t] = []
     /// The app is playing but its tap has delivered only exact silence for more than
     /// EngineController.silenceHintSeconds: the System Audio Recording permission is probably off.
-    /// If the tap carried sound earlier, macOS must also say the permission is denied now.
+    /// macOS is asked too (AudioSystem.systemAudioCaptureAuthorization): "allowed" means a quiet
+    /// app, and if the tap carried sound earlier it must say "denied" for the hint to show.
     public var appSilentWhilePlaying = false
     /// Creating the app's tap failed; the engine runs without the app until the next rebuild.
     public var tapError: CoreAudioError?
@@ -156,7 +157,7 @@ public final class EngineController {
     private var failures = 0
     /// Monitor ticks until macOS is asked again about System Audio Recording, and its last answer.
     private var permissionCheckTicks = 0
-    private var permissionRevoked = false
+    private var lastPermissionAnswer = CaptureAuthorization.unknown
 
     private struct DeviceChoice: Equatable {
         var sink: AudioObjectID?
@@ -666,13 +667,13 @@ public final class EngineController {
 
     /// The tap is delivering nothing but exact zeros, for a while, although the app is playing.
     ///
-    /// - A tap that has never carried sound: the permission was probably never given, and that is
-    ///   the whole signal (macOS has no way to ask).
-    /// - A tap that did carry sound: exact zeros are then also what a quiet call or a muted app
-    ///   looks like, so silence alone proves nothing. Only if macOS itself says System Audio
-    ///   Recording is denied now is it a revoked permission, and the hint shows at once, without a
-    ///   rebuild. "Allowed" and "no answer" both leave it a quiet app, so a quiet call can never
-    ///   raise the alarm.
+    /// Exact zeros are also what a quiet call or a muted app looks like, so silence alone is a weak
+    /// signal, and macOS is asked what it says about System Audio Recording:
+    ///
+    /// - "Allowed": a quiet app, never a hint, whether or not the tap carried sound before.
+    /// - "Denied": the hint shows at once, without a rebuild.
+    /// - No answer (older macOS, or the private call is missing): a tap that has never carried
+    ///   sound is taken to be denied, as before; one that did is a quiet app.
     private func captureLooksDenied() -> Bool {
         guard let session, session.tap != nil else { return forgetPermissionCheck() }
         let stats = engine.stats()
@@ -680,19 +681,23 @@ public final class EngineController {
         guard silentSeconds > Self.silenceHintSeconds,
               audioSystem.processes().contains(where: { session.group.contains($0.objectID) && $0.isRunningOutput })
         else { return forgetPermissionCheck() }
-        if !stats.tapHadAudio { return true }
-        return permissionWasRevoked()
+        let answer = permissionAnswer()
+        return stats.tapHadAudio ? answer == .denied : answer != .authorized
     }
 
-    /// Whether macOS says System Audio Recording is denied. Asked right away when the silence
-    /// starts, then every `permissionCheckSeconds` for as long as it lasts.
-    private func permissionWasRevoked() -> Bool {
+    /// What macOS says about System Audio Recording while the silence lasts: asked right away when
+    /// it starts, then every `permissionCheckSeconds`. When the answer goes from denied to allowed
+    /// the audio path is rebuilt once, because a tap made without the permission may stay silent
+    /// after it is given.
+    private func permissionAnswer() -> CaptureAuthorization {
         if permissionCheckTicks <= 0 {
-            permissionRevoked = audioSystem.systemAudioCaptureAuthorization() == .denied
+            let answer = audioSystem.systemAudioCaptureAuthorization()
+            if lastPermissionAnswer == .denied && answer == .authorized { requestRebuild() }
+            lastPermissionAnswer = answer
             permissionCheckTicks = Int((Self.permissionCheckSeconds / Self.monitorInterval).rounded(.up))
         }
         permissionCheckTicks -= 1
-        return permissionRevoked
+        return lastPermissionAnswer
     }
 
     /// The silence is over (or never was one): the next one starts with a fresh question. Returns
@@ -700,7 +705,7 @@ public final class EngineController {
     @discardableResult
     private func forgetPermissionCheck() -> Bool {
         permissionCheckTicks = 0
-        permissionRevoked = false
+        lastPermissionAnswer = .unknown
         return false
     }
 
