@@ -4,6 +4,9 @@ import DuettectlCore
 import Foundation
 
 let dbfsMinus12 = -12.0
+/// A muted or absent tone must stay under this. It would otherwise be at -18 or -12 dBFS; the odd
+/// late I/O cycle on a busy CI machine spreads up to about -65 dBFS of the other tone around.
+let absentDBFS = -50.0
 /// The engine's and the driver's test tones, and the test mic, are all at -12 dBFS.
 let toneHz = 440.0
 let testMicHz = 1000.0
@@ -140,36 +143,69 @@ func runLoopback(_ ctx: Context) throws {
     let chirpFrames = Int(0.2 * rate)
     let chirp = Chirp.make(sampleRate: rate, startHz: 200, endHz: 12000, frames: chirpFrames, amplitude: 0.5)
     let tailSeconds = ctx.double("seconds") ?? 1.5
-    let recorder = try Recorder(device: duette, seconds: 30)
-    let player = try Player(device: sink, signal: chirp, tailHz: testMicHz, tailAmplitude: 0.5)
+    let overloads = OverloadLog()
+    overloads.watch(duette, name: "Duette (the reader)")
+    overloads.watch(sink, name: "Duette Sink (the writer)")
 
-    Stage.set("start IO on Duette")
-    try recorder.start()
-    defer { recorder.stop() }
-    recorder.waitForFrames(UInt64(0.2 * rate), timeout: 5)
-    Stage.set("start IO on the sink")
-    try player.start()
-    defer { player.stop() }
-    idle(0.3)
-    player.arm()
-    idle(Double(chirpFrames) / rate + tailSeconds)
-    Stage.set("stop the writer")
-    player.stop()
-    idle(0.5)
-    recorder.stop()
+    /// One chirp through the loopback, recorded.
+    struct Take {
+        var result: LoopbackResult?
+        var recording: [Float]
+        var first: UInt64
+        var writer: [IOBlock]
+        var reader: [IOBlock]
+        var overloads: Int
+    }
+    func take() throws -> Take {
+        let before = overloads.count(duette) + overloads.count(sink)
+        let recorder = try Recorder(device: duette, seconds: 30)
+        let player = try Player(device: sink, signal: chirp, tailHz: testMicHz, tailAmplitude: 0.5)
+        Stage.set("start IO on Duette")
+        try recorder.start()
+        defer { recorder.stop() }
+        recorder.waitForFrames(UInt64(0.2 * rate), timeout: 5)
+        Stage.set("start IO on the sink")
+        try player.start()
+        defer { player.stop() }
+        idle(0.3)
+        player.arm()
+        idle(Double(chirpFrames) / rate + tailSeconds)
+        Stage.set("stop the writer")
+        player.stop()
+        idle(0.5)
+        recorder.stop()
+        let total = recorder.frames
+        let kept = min(total, UInt64(recorder.capacity))
+        let first = total - kept
+        let recording = recorder.channel(0, from: first, count: Int(kept))
+        let writer = player.blocks()
+        let reader = recorder.blocks()
+        let result = LoopbackAnalysis.analyze(chirp: chirp, writer: writer, reader: reader, recording: recording,
+                                              recordingStart: Int64(first), bufferFrames: Int(buffer))
+        return Take(result: result, recording: recording, first: first, writer: writer, reader: reader,
+                    overloads: overloads.count(duette) + overloads.count(sink) - before)
+    }
+
+    // A late I/O cycle on the CI machine damages the chirp; such a take is repeated, up to three
+    // times, and the count is reported.
+    var chosen = try take()
+    var takes = 1
+    while takes < 3, chosen.overloads > 0 || (chosen.result?.confidence ?? 0) < 0.9 {
+        note(String(format: "take %ld: %ld overloads, confidence %.3f; taking it again", takes, chosen.overloads,
+                    chosen.result?.confidence ?? 0))
+        chosen = try take()
+        takes += 1
+    }
+    r.info("takes", "\(takes)", detail: "a take with an overload or a damaged chirp is repeated, at most 3 times; the last had \(chosen.overloads) overloads")
 
     r.check("buffer.duette", Device.bufferFrameSize(duette) == buffer, "\(Device.bufferFrameSize(duette) ?? 0) frames")
     r.check("buffer.sink", Device.bufferFrameSize(sink) == buffer, "\(Device.bufferFrameSize(sink) ?? 0) frames")
-
-    let writer = player.blocks()
-    let reader = recorder.blocks()
+    let writer = chosen.writer
+    let reader = chosen.reader
+    let recording = chosen.recording
+    let first = chosen.first
     r.info("cycles", "writer \(writer.count) of \(writer.first?.frames ?? 0) frames, reader \(reader.count) of \(reader.first?.frames ?? 0) frames")
-    let total = recorder.frames
-    let kept = min(total, UInt64(recorder.capacity))
-    let first = total - kept
-    let recording = recorder.channel(0, from: first, count: Int(kept))
-    guard let result = LoopbackAnalysis.analyze(chirp: chirp, writer: writer, reader: reader, recording: recording,
-                                                recordingStart: Int64(first), bufferFrames: Int(buffer)) else {
+    guard let result = chosen.result else {
         r.check("analysis", false, "nothing to analyse", detail: "writer \(writer.count) cycles, reader \(reader.count), \(recording.count) frames")
         return
     }

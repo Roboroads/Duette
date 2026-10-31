@@ -183,8 +183,8 @@ phase_blocking() {
   local failed=0
   # M1: the driver alone, then the hidden sink as the engine's main device.
   run_cmd blocking selftest 60 "tone.left.440hz off.silence" -- selftest || failed=1
-  run_cmd blocking loopback-128 60 "latency latency.worst sample-offset silence-after-stop" -- --buffer 128 loopback || failed=1
-  run_cmd blocking loopback-64 60 "latency latency.worst sample-offset silence-after-stop" -- --buffer 64 loopback || failed=1
+  run_cmd blocking loopback-128 60 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 128 loopback || failed=1
+  run_cmd blocking loopback-64 60 "latency latency.worst sample-offset silence-after-stop takes" -- --buffer 64 loopback || failed=1
   run_cmd blocking hidden-agg 60 "main-subdevice clock-device ioproc-runs engine-tone.440hz" -- hidden-agg || failed=1
   # M2 and M4 on the mic path.
   run_cmd blocking engine 60 "duette.1000hz overloads" -- engine --mic test-mic --seconds 3 --expect '1000@-12' || failed=1
@@ -220,7 +220,7 @@ phase_blocking() {
   restart_coreaudiod
   "$cli" list >/dev/null 2>&1 || true
   echo "::endgroup::"
-  run_cmd blocking tcc-denied 90 "state denied.440hz denied.1000hz denied.hint" -- verify-mix --expect-denied || failed=1
+  run_cmd blocking tcc-denied 90 "state denied.tap-zeros denied.1000hz denied.hint" -- verify-mix --expect-denied || failed=1
   echo "::group::TCC: allow System Audio Recording again"
   tcc_set 2 kTCCServiceAudioCapture
   restart_coreaudiod

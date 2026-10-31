@@ -223,7 +223,7 @@ func runVerifyMic(_ ctx: Context) throws {
     // M2: the test mic's 1 kHz (on a clock 200 ppm fast) arrives at its level, resampled to the
     // sink's clock by the aggregate's drift compensation.
     let plain = recorder.take(seconds: 2, settle: 0.5)
-    r.tones("mic", plain, expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz)])
+    r.tones("mic", plain, expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
     let right = recorder.latest(seconds: 1, channel: 1)
     r.tones("mic.right", right, expect: [.at(testMicHz, dbfsMinus12)])
     r.dropouts("mic.dropouts", plain)
@@ -248,9 +248,9 @@ func runVerifyMic(_ ctx: Context) throws {
 
     // The engine's own test tone replaces the mix.
     run.engine.testTone = true
-    r.tones("engine-tone", recorder.take(seconds: 1, settle: 0.2), expect: [.at(toneHz, dbfsMinus12), .absent(testMicHz)])
+    r.tones("engine-tone", recorder.take(seconds: 1, settle: 0.2), expect: [.at(toneHz, dbfsMinus12), .absent(testMicHz, below: absentDBFS)])
     run.engine.testTone = false
-    r.tones("after-tone", recorder.take(seconds: 1, settle: 0.2), expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz)])
+    r.tones("after-tone", recorder.take(seconds: 1, settle: 0.2), expect: [.at(testMicHz, dbfsMinus12), .absent(toneHz, below: absentDBFS)])
     r.engineStats(run)
 }
 
@@ -394,7 +394,11 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
     if expectDenied {
         // With System Audio Recording denied, the tap is expected to give exact silence, and the
         // controller to say so after EngineController.silenceHintSeconds.
-        r.tones("denied", mix, expect: [.absent(toneHz, below: -100), .at(testMicHz, dbfsMinus12)])
+        r.tones("denied", mix, expect: [.absent(toneHz, below: absentDBFS), .at(testMicHz, dbfsMinus12)])
+        let denied = run.engine.stats()
+        let frames = Double(denied.tapZeroFrames) / Device.sampleRate
+        r.check("denied.tap-zeros", !denied.tapHadAudio && frames > 2, String(format: "%.1f s of exact zeros", frames),
+                detail: "the engine's count of exact-zero tap frames since it started; tap had audio \(denied.tapHadAudio)")
         let hinted = waitUntil(EngineController.silenceHintSeconds + 3) { run.controller.status.appSilentWhilePlaying }
         r.check("denied.hint", hinted, "appSilentWhilePlaying \(run.controller.status.appSilentWhilePlaying)",
                 detail: "tap zero run \(run.engine.stats().tapZeroFrames) frames, tap had audio \(run.engine.stats().tapHadAudio)")
@@ -421,11 +425,11 @@ func runVerifyMix(_ ctx: Context, speakerRate: Double) throws {
             expect: [.at(toneHz, dbfsMinus12 - 6.0206), .at(testMicHz, dbfsMinus12)])
     run.engine.setMuted(true, for: .mic)
     r.tones("mic-muted", recorder.take(seconds: 1, settle: 0.2),
-            expect: [.at(toneHz, dbfsMinus12 - 6.0206), .absent(testMicHz)])
+            expect: [.at(toneHz, dbfsMinus12 - 6.0206), .absent(testMicHz, below: absentDBFS)])
     run.engine.setMuted(false, for: .mic)
     run.engine.setMuted(true, for: .app)
     r.tones("app-muted", recorder.take(seconds: 1, settle: 0.2),
-            expect: [.absent(toneHz), .at(testMicHz, dbfsMinus12)])
+            expect: [.absent(toneHz, below: absentDBFS), .at(testMicHz, dbfsMinus12)])
     run.engine.setMuted(false, for: .app)
     run.engine.setGain(1, for: .app)
     r.check("no-silence-hint", !run.controller.status.appSilentWhilePlaying, "appSilentWhilePlaying \(run.controller.status.appSilentWhilePlaying)")
