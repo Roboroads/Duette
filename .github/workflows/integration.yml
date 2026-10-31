@@ -1,0 +1,104 @@
+name: Integration
+
+# Headless checks of the driver and the engine against the real HAL of a macOS runner:
+# scripts/ci/integration.sh builds the driver with its CI test devices, grants the TCC
+# permissions, installs it, runs duettectl's commands and writes a pass/fail table to the job
+# summary.
+#
+# Everything the runner can do is blocking. The checks it provably cannot do run in their own
+# step with continue-on-error and show as "needs hands-on" in the table; each of them is a step
+# of the hands-on checklist.
+#
+# The 10-minute soak runs nightly, by hand (workflow_dispatch), and on pull requests labelled
+# "soak".
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: Soak length in minutes
+        default: '10'
+
+concurrency:
+  group: >-
+    integration-${{ github.event_name == 'pull_request'
+      && format('{0}-{1}', github.ref, github.event.action == 'labeled' && 'soak' || 'checks')
+      || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  integration:
+    name: integration (macOS)
+    if: github.event_name != 'schedule' && github.event.action != 'labeled'
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up (build, TCC, install the test-device driver)
+        run: bash scripts/ci/integration.sh setup
+
+      - name: Checks that must pass
+        run: bash scripts/ci/integration.sh blocking
+
+      # Process taps on the runner: S3 found the IOProc of a tap aggregate never starts there.
+      # These are the "needs hands-on" rows of the table.
+      - name: Checks that need hands-on
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: bash scripts/ci/integration.sh hands-on
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/integration.sh summary
+
+      - name: Upload logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: build/integration
+          if-no-files-found: ignore
+
+  soak:
+    name: soak (macOS)
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'soak'))
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up (build, TCC, install the test-device driver)
+        run: bash scripts/ci/integration.sh setup
+
+      - name: Soak
+        env:
+          SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '10' }}
+        run: bash scripts/ci/integration.sh soak "$SOAK_MINUTES"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/integration.sh summary
+
+      - name: Upload logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-logs
+          path: build/integration
+          if-no-files-found: ignore

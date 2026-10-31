@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+# Headless integration checks on a macOS runner (or a Mac you can spare): installs the driver
+# with its CI test devices, grants the TCC permissions, runs duettectl's commands against the real
+# HAL and writes a pass/fail table. Run from .github/workflows/integration.yml.
+#
+# Usage: scripts/ci/integration.sh <phase> [args]
+#   setup         build what is missing, grant TCC, install build/test-out/Duette.driver
+#   blocking      the checks that must pass on the runner
+#   hands-on      the checks the runner cannot do; their failures are reported as
+#                 "needs hands-on" and do not fail the job
+#   soak [MIN]    the long engine run (default 10 minutes)
+#   summary       the table, to stdout and $GITHUB_STEP_SUMMARY; uninstalls the driver
+#   all           setup, blocking, hands-on, summary
+#
+# Results go to build/integration/: results.tsv (every check, from duettectl --report),
+# commands.tsv (one line per command) and one log per command.
+#
+# It changes the machine: TCC.db rows, the installed plug-in, default devices. Do not run it on a
+# Mac someone uses.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+repo_root=$(pwd)
+out=$repo_root/build/integration
+cli=$repo_root/build/out/duettectl
+driver=$repo_root/build/test-out/Duette.driver
+results=$out/results.tsv
+commands=$out/commands.tsv
+mkdir -p "$out"
+
+if [ "$(uname -s)" != Darwin ]; then
+  echo "integration.sh: macOS only" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------------- helpers
+
+# Runs one duettectl command. A stack sample is taken shortly before its watchdog would fire,
+# so a call that never returns shows where it is stuck.
+#   run_cmd <group> <id> <seconds> <headline checks> -- <duettectl args...>
+run_cmd() {
+  local group=$1 id=$2 limit=$3 headline=$4
+  shift 5
+  local log=$out/$id.log
+  local started=$SECONDS rc=0
+  echo "::group::$id: duettectl $*"
+  "$cli" --report "$results" --label "$id" --timeout "$limit" "$@" >"$log" 2>&1 &
+  local pid=$!
+  (
+    sleep $((limit > 15 ? limit - 8 : limit))
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "==> $id is still running after $((limit - 8)) s; sampling it" >>"$log.sample"
+      sample "$pid" 3 -mayDie -file "$out/$id.sample.txt" >/dev/null 2>&1 || true
+    fi
+  ) &
+  local watcher=$!
+  wait "$pid" || rc=$?
+  kill "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
+  cat "$log"
+  if [ -f "$out/$id.sample.txt" ]; then
+    echo "---- stack sample of the stuck command (main and audio threads) ----"
+    grep -E 'Thread_|Call graph|AudioDevice|AudioHardware|HALC_|HALS_|TCC|tcc|xpc|mach_msg|semaphore|duettectl' \
+      "$out/$id.sample.txt" | head -n 80 || true
+  fi
+  echo "::endgroup::"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$group" "$id" "$rc" "$((SECONDS - started))" "$headline" >>"$commands"
+  if [ "$rc" -eq 0 ]; then
+    echo "PASS $id"
+  else
+    echo "FAIL $id (exit $rc)"
+  fi
+  return "$rc"
+}
+
+# Records a check that duettectl did not make (for example from the DuetteKit tests).
+add_check() { # id name status value detail
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >>"$results"
+}
+
+tcc_clients() {
+  local responsible_pid responsible_path p c
+  responsible_pid=$("$cli" whoami 2>/dev/null | sed -n 's/^RESPONSIBLE_PID=//p' | head -n 1)
+  responsible_path=$(ps -o comm= -p "${responsible_pid:-1}" 2>/dev/null || true)
+  {
+    echo "$cli"
+    echo /usr/bin/afplay
+    echo "$responsible_path"
+    p=$$
+    while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+      c=$(ps -o comm= -p "$p" 2>/dev/null || true)
+      echo "$c"
+      p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    done
+  } | grep '^/' | sort -u
+}
+
+user_tcc_db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+system_tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
+
+# Sets Microphone and AudioCapture (System Audio Recording) for every client in both TCC
+# databases: auth_value 2 allows, 0 denies. The inserts are S3's, which tccd honours on the
+# runner (authValue=2 authReason=4). They must be in place before the first tap.
+tcc_set() { # auth_value [services...]
+  local value=$1
+  shift
+  local services=${*:-kTCCServiceMicrophone kTCCServiceAudioCapture}
+  local client svc db
+  while IFS= read -r client; do
+    [ -n "$client" ] || continue
+    for svc in $services; do
+      for db in "$user_tcc_db" "$system_tcc_db"; do
+        sudo sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags) VALUES ('$svc', '$client', 1, $value, 4, 1, 0);" \
+          || echo "::warning::TCC insert failed: $db $svc $client"
+      done
+    done
+  done <<EOF
+$(tcc_clients)
+EOF
+  sudo killall tccd 2>/dev/null || true
+  killall tccd 2>/dev/null || true
+  sleep 1
+}
+
+tcc_show() {
+  local db
+  for db in "$user_tcc_db" "$system_tcc_db"; do
+    echo "== $db"
+    sudo sqlite3 "$db" "SELECT service, client, auth_value, auth_reason FROM access WHERE service IN ('kTCCServiceMicrophone','kTCCServiceAudioCapture') ORDER BY service, client;" || true
+  done
+}
+
+restart_coreaudiod() {
+  sudo killall coreaudiod 2>/dev/null || sudo launchctl kickstart -k system/com.apple.audio.coreaudiod || true
+  sleep 2
+}
+
+# ------------------------------------------------------------------------------------ phases
+
+phase_setup() {
+  : >"$results"
+  : >"$commands"
+  rm -f "$out"/*.log "$out"/*.sample.txt "$out"/*.log.sample "$out/setup-done"
+
+  echo "::group::build"
+  if [ ! -d "$driver" ]; then
+    bash scripts/ci/build-driver.sh
+  fi
+  if [ ! -x "$cli" ]; then
+    DUETTECTL_SKIP_TESTS=1 bash scripts/ci/build-cli.sh
+  fi
+  echo "::endgroup::"
+
+  echo "::group::machine"
+  sw_vers
+  csrutil status || true
+  "$cli" whoami
+  echo "::endgroup::"
+
+  # TCC first: a tap that runs before the grant can leave a permission request pending.
+  echo "::group::TCC: allow Microphone and System Audio Recording"
+  tcc_clients
+  tcc_set 2
+  tcc_show
+  echo "::endgroup::"
+
+  echo "::group::install the driver with the test devices"
+  sudo bash scripts/install.sh --driver "$driver" --no-app
+  echo "::endgroup::"
+
+  # The HAL can take a moment to publish the devices after coreaudiod restarts.
+  run_cmd setup list 60 "sink.hidden test-mic.listed test-speaker.listed" -- list --test-devices
+  touch "$out/setup-done"
+}
+
+require_setup() {
+  if [ ! -f "$out/setup-done" ]; then
+    echo "integration.sh: run the setup phase first (it failed or did not run)" >&2
+    exit 1
+  fi
+}
+
+phase_blocking() {
+  require_setup
+  local failed=0
+  run_cmd blocking selftest 60 "tone.left.440hz off.silence" -- selftest || failed=1
+  run_cmd blocking loopback-128 60 "latency sample-offset silence-after-stop" -- --buffer 128 loopback || failed=1
+  run_cmd blocking loopback-64 60 "latency sample-offset silence-after-stop" -- --buffer 64 loopback || failed=1
+  run_cmd blocking hidden-agg 60 "main-subdevice engine-tone.440hz ioproc-runs" -- hidden-agg || failed=1
+  run_cmd blocking engine 60 "duette.1000hz overloads" -- engine --mic test-mic --seconds 3 --expect '1000@-12' || failed=1
+  run_cmd blocking verify-mic 90 "mic.1000hz mic-gain-0.5.1000hz mic-mute.silence engine-tone.440hz" -- verify-mic || failed=1
+  run_cmd blocking dcli-aggregate 60 "aggregate.lists-pid aggregate.clears" -- dcli --mode aggregate || failed=1
+  run_cmd blocking feedback-loop 90 "dcli.lists-app detector.fires detector.ignores-own-process" -- feedback-loop || failed=1
+
+  # DuetteKit's HAL tests, now with the driver installed: testHiddenSinkAsMainSubdeviceRunsTheEngine
+  # runs here instead of being skipped.
+  echo "::group::DuetteKit HALSmokeTests with the driver installed"
+  local log=$out/kit-hal-tests.log rc=0 started=$SECONDS
+  swift test --package-path Packages/DuetteKit --scratch-path build/kit/debug --filter HALSmokeTests >"$log" 2>&1 || rc=$?
+  grep -E "Test Case|HAL |error|failed|skipped" "$log" | tail -n 80 || true
+  echo "::endgroup::"
+  printf '%s\t%s\t%s\t%s\t%s\n' blocking kit-hal-tests "$rc" "$((SECONDS - started))" "hidden-sink-engine" >>"$commands"
+  if grep -q "testHiddenSinkAsMainSubdeviceRunsTheEngine\]' passed" "$log"; then
+    add_check kit-hal-tests hidden-sink-engine PASS "passed" "DuetteKit testHiddenSinkAsMainSubdeviceRunsTheEngine"
+  else
+    add_check kit-hal-tests hidden-sink-engine FAIL "did not pass" "skipped or failed: see kit-hal-tests.log"
+    failed=1
+  fi
+  [ "$rc" -eq 0 ] || failed=1
+  return "$failed"
+}
+
+phase_hands_on() {
+  require_setup
+  # Process taps on the runner (S3: tap and aggregate are created, then the IOProc never starts).
+  run_cmd hands-on verify-mix 90 "mix.440hz mix.1000hz tap.audio app-gain-0.5.440hz" -- verify-mix || true
+  run_cmd hands-on rate-mismatch 90 "mix.440hz mix.1000hz residual" -- rate-mismatch || true
+  run_cmd hands-on feedback-controller 120 "controller.warns" -- feedback-loop --controller || true
+  run_cmd hands-on dcli-vpio 60 "vpio.lists-pid" -- dcli --mode vpio || true
+
+  # TCC denial: what an app sees when System Audio Recording is off. Last, and put back after.
+  echo "::group::TCC: deny System Audio Recording"
+  tcc_set 0 kTCCServiceAudioCapture
+  restart_coreaudiod
+  "$cli" list >/dev/null 2>&1 || true
+  echo "::endgroup::"
+  run_cmd hands-on tcc-denied 90 "denied.440hz denied.hint" -- verify-mix --expect-denied || true
+  echo "::group::TCC: allow System Audio Recording again"
+  tcc_set 2 kTCCServiceAudioCapture
+  restart_coreaudiod
+  "$cli" list >/dev/null 2>&1 || true
+  echo "::endgroup::"
+  return 0
+}
+
+phase_soak() {
+  require_setup
+  local minutes=${1:-10}
+  local limit
+  limit=$(awk -v m="$minutes" 'BEGIN { printf "%d", m * 60 + 240 }')
+  run_cmd blocking soak "$limit" "windows overloads reader-overloads dropouts" -- soak --minutes "$minutes"
+}
+
+# Turns the results into the job summary: one row per command, then every check.
+phase_summary() {
+  local table=$out/summary.md
+  {
+    echo "## Integration (macOS runner)"
+    echo
+    echo "$(sw_vers -productName) $(sw_vers -productVersion), $(uname -m). Driver: build/test-out/Duette.driver (with test devices)."
+    echo
+    echo "| Command | Result | Measured |"
+    echo "|---|---|---|"
+    if [ -f "$commands" ]; then
+      while IFS=$'\t' read -r group id rc seconds headline; do
+        local status measured=""
+        if [ "$rc" = 0 ]; then
+          status=PASS
+        elif [ "$group" = hands-on ]; then
+          status="needs hands-on"
+        else
+          status=FAIL
+        fi
+        if [ "$rc" = 124 ]; then status="$status (stuck: watchdog)"; fi
+        local name
+        for name in $headline; do
+          local row
+          row=$(awk -F'\t' -v id="$id" -v n="$name" '$1 == id && $2 == n { print $3 ": " $4 }' "$results" | tail -n 1)
+          [ -n "$row" ] && measured="${measured:+$measured; }$name $row"
+        done
+        if [ "$rc" = 124 ]; then
+          local stuck
+          stuck=$(awk -F'\t' -v id="$id" '$1 == id && $2 == "watchdog" { print $5 }' "$results" | tail -n 1)
+          measured="${measured:+$measured; }$stuck"
+        fi
+        echo "| $id | $status | ${measured:-see log} (${seconds} s) |"
+      done <"$commands"
+    fi
+    echo
+    echo "<details><summary>Every check</summary>"
+    echo
+    echo "| Command | Check | Status | Value | Detail |"
+    echo "|---|---|---|---|---|"
+    if [ -f "$results" ]; then
+      awk -F'\t' '{ printf "| %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5 }' "$results"
+    fi
+    echo
+    echo "</details>"
+  } >"$table"
+  cat "$table"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    cat "$table" >>"$GITHUB_STEP_SUMMARY"
+  fi
+
+  echo "::group::driver log"
+  /usr/bin/log show --last 30m --info --predicate 'subsystem == "me.roboroads.duette.driver"' 2>/dev/null | tail -n 150 || true
+  echo "::endgroup::"
+  echo "::group::uninstall"
+  sudo bash scripts/uninstall.sh || true
+  echo "::endgroup::"
+}
+
+phase=${1:-}
+shift || true
+case "$phase" in
+  setup) phase_setup ;;
+  blocking) phase_blocking ;;
+  hands-on) phase_hands_on ;;
+  soak) phase_soak "$@" ;;
+  summary) phase_summary ;;
+  all)
+    rc=0
+    phase_setup
+    phase_blocking || rc=1
+    phase_hands_on
+    phase_summary
+    exit "$rc"
+    ;;
+  *)
+    sed -n '2,20p' "$0"
+    exit 2
+    ;;
+esac
